@@ -137,6 +137,12 @@ class SearchEngine:
         if self._qwen is not None and self._qwen.model_name != self.store.get_meta("model.qwen"):
             self._qwen = None
         self.files = {r.id: r for r in self.store.files()}
+        counts: dict[str, int] = defaultdict(int)
+        for r in self.files.values():
+            if r.language:
+                counts[r.language] += 1
+        self._languages = sorted(counts, key=lambda lang: -counts[lang])  # for word stems in queries
+        self._fts_tables = {t for t in ("segments_stem", "segments_tri") if self.store._table_exists(t)}
         # Vectors stay in memory-mapped files; only the changed files are read again.
         self.cache.sync()
         tables = self.cache.tables
@@ -268,26 +274,49 @@ class SearchEngine:
         return out
 
     def _speech(self, query: str, allowed: set[int], diag: dict) -> list[Hit]:
+        """Exact words. First all terms, then any term. Each level asks three indexes in order:
+        spoken words, word stems (plurals) and trigrams (parts of compound words)."""
         terms = fts.match_terms(query)
-        for expr in fts.build(query):
-            rows = self.store.query(
-                "SELECT s.id, s.file_id, s.start, s.end, s.text, s.words, bm25(segments_fts) AS score "
-                "FROM segments_fts JOIN segments s ON s.id = segments_fts.rowid "
-                "WHERE segments_fts MATCH ? AND s.file_id IN (SELECT value FROM json_each(?)) "
-                "ORDER BY score LIMIT ?",
-                (expr, json.dumps(sorted(allowed)), self.cfg.channel_top_k))
-            if rows:
-                diag["speech"] = {"query": expr, "kept": len(rows)}
+        indexes = [("word", "segments_fts", fts.build(query))]
+        if "segments_stem" in self._fts_tables:
+            indexes.append(("stem", "segments_stem", fts.build_stem(query, self._languages)))
+        if "segments_tri" in self._fts_tables:
+            indexes.append(("trigram", "segments_tri", fts.build_trigram(query)))
+        top_k = self.cfg.channel_top_k
+        tried: list[str] = []
+        for level in (0, 1):  # 0 = all terms, 1 = any term
+            found: list = []
+            used: list[str] = []
+            seen: set[int] = set()
+            for name, table, exprs in indexes:
+                expr = exprs[level] if len(exprs) > level else ""
+                if not expr or len(found) >= top_k:
+                    continue
+                tried.append(f"{name}: {expr}")
+                rows = self.store.query(
+                    f"SELECT s.id, s.file_id, s.start, s.end, s.text, s.words, bm25({table}) AS score "
+                    f"FROM {table} JOIN segments s ON s.id = {table}.rowid "
+                    f"WHERE {table} MATCH ? AND s.file_id IN (SELECT value FROM json_each(?)) "
+                    "ORDER BY score LIMIT ?",
+                    (expr, json.dumps(sorted(allowed)), top_k))
+                new = [r for r in rows if int(r["id"]) not in seen]
+                if new:
+                    used.append(f"{name}: {expr}")
+                    seen.update(int(r["id"]) for r in new)
+                    found += new
+            if found:
+                diag["speech"] = {"query": " | ".join(used), "kept": len(found[:top_k])}
                 hits = []
-                for r in rows:
+                for r in found[:top_k]:
                     words = json.loads(r["words"] or "[]")
-                    peak = fts.first_word_time(words, terms)
+                    f = self.files.get(int(r["file_id"]))
+                    peak = fts.first_word_time(words, terms, f.language if f else None)
                     start = float(r["start"])
                     hits.append(Hit("speech", int(r["file_id"]), start, float(r["end"]),
                                     peak if peak is not None else start, -float(r["score"]),
                                     -float(r["score"]), ref=int(r["id"]), text=r["text"]))
                 return hits
-        diag["speech"] = {"query": " | ".join(fts.build(query)), "kept": 0}
+        diag["speech"] = {"query": " | ".join(tried), "kept": 0}
         return []
 
     # --- fusion -------------------------------------------------------------------------------------
@@ -381,9 +410,32 @@ class SearchEngine:
                     break
             out = {"query": query, "mode": mode, "results": results,
                    "total_moments": len(moments), "searched_files": len(allowed)}
+            off = {name: info["why"] for name, info in self._channel_state().items()
+                   if name in MODES[mode] and not info["on"]}
+            if off:
+                out["channels_off"] = off  # so an agent knows why e.g. action mode found less
             if explain:
                 out["channels"] = diag
             return out
+
+    def _channel_state(self) -> dict:
+        qwen_off = "Qwen is off (qwen_enabled = false, or the server runs with --no-qwen)"
+        return {
+            "visual": {"on": len(self.frames) > 0, "why": "no frame vectors yet: run 'clipdex index'"},
+            "scenes": {"on": self.use_qwen and len(self.scene_table) > 0,
+                       "why": qwen_off if not self.use_qwen else "no scene vectors yet: index with Qwen on"},
+            "speech": {"on": any(f.speech_done for f in self.files.values()),
+                       "why": "no file is transcribed yet (or asr_backend = none)"},
+            "speech_sem": {"on": self.use_qwen and len(self.chunks) > 0,
+                           "why": qwen_off if not self.use_qwen else "no transcript vectors yet: index with Qwen on"},
+        }
+
+    def channels(self) -> dict:
+        """Which search channels work now, and why a channel is off."""
+        with self._lock:
+            self._refresh()
+            return {name: info if not info["on"] else {"on": True}
+                    for name, info in self._channel_state().items()}
 
     def _moment_dict(self, m: Moment, rank: int, explain: bool, weights: dict[str, float]) -> dict:
         f = self.files[m.file_id]
@@ -554,6 +606,7 @@ class SearchEngine:
         s["volume"] = self.volume
         s["index_dir"] = str(self.index_dir)
         s["models"] = {"siglip": self.store.get_meta("model.siglip"), "qwen": self.store.get_meta("model.qwen")}
+        s["channels"] = self.channels()
         s["duration_hours"] = round(s.pop("duration_seconds") / 3600, 2)
         s["speech_hours"] = round(s.pop("speech_seconds") / 3600, 2)
         failed = self.store.query("SELECT relpath, error FROM files WHERE error IS NOT NULL AND missing=0 LIMIT 20")

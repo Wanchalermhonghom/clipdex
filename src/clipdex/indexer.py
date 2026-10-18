@@ -449,6 +449,14 @@ class Indexer:
             report.seconds = time.time() - started
             return report
         self.log(f"Indexing {len(todo)} file(s). Stages: {', '.join(st for st in STAGES if st in wanted)}.")
+        off = []
+        if not self.cfg.qwen_enabled:
+            off.append("action search and speech meaning (qwen_enabled = false)")
+        if not self.models.asr_enabled():
+            off.append("speech search (asr_backend = none)")
+        if off:
+            self.log("Off: " + "; ".join(off) + ". Visual search and exact speech search still work."
+                     if self.models.asr_enabled() else "Off: " + "; ".join(off) + ".")
 
         # One pass per model: all files get SigLIP, then Whisper, then Qwen. Only one model is in
         # memory at a time, so the peak is the largest model, not the sum of all three.
@@ -633,7 +641,7 @@ class Indexer:
                 if p.audio_error:
                     p.warnings.append(p.audio_error + "; the file has no transcript")
             rows = [s.to_row() if isinstance(s, speech.Segment) else s for s in tr.segments]
-            self.store.add_segments(row.id, rows)
+            self.store.add_segments(row.id, rows, tr.language)
             self.store.add_chunks(row.id, speech.make_chunks(rows, self.cfg.speech_chunk_seconds))
             self.store.update_file(row.id, speech_done=1, language=tr.language,
                                    speech_seconds=round(tr.speech_seconds, 2))

@@ -1,7 +1,14 @@
-"""Build SQLite FTS5 queries from natural language (German and English)."""
+"""Build SQLite FTS5 queries from natural language (German and English).
+
+The transcript has three full-text indexes. Search tries them in this order:
+  word     the spoken words, with prefix match ("lauf" finds "läuft")
+  stem     Snowball word stems in the file's language ("Bahnhöfe" finds "Bahnhof")
+  trigram  parts of words, for compounds ("maschine" finds "Kaffeemaschine")
+"""
 
 from __future__ import annotations
 
+import functools
 import re
 import unicodedata
 
@@ -75,6 +82,79 @@ def build(query: str) -> list[str]:
     return out
 
 
+# Whisper language code -> Snowball stemmer name
+_SNOWBALL = {
+    "de": "german", "en": "english", "fr": "french", "es": "spanish", "it": "italian", "nl": "dutch",
+    "pt": "portuguese", "sv": "swedish", "da": "danish", "no": "norwegian", "nn": "norwegian",
+    "fi": "finnish", "ru": "russian", "tr": "turkish", "hu": "hungarian", "ro": "romanian",
+}
+TRIGRAM_MIN = 4  # shorter parts match too much ("rot" is in "Brot")
+
+
+@functools.cache
+def _stemmer(language: str | None):
+    name = _SNOWBALL.get((language or "").lower())
+    if name is None:
+        return None
+    import snowballstemmer
+
+    return snowballstemmer.stemmer(name)
+
+
+def stem_word(word: str, language: str | None) -> str:
+    stemmer = _stemmer(language)
+    word = word.casefold()
+    return fold(stemmer.stemWord(word) if stemmer else word)
+
+
+def stem_text(text: str, language: str | None) -> str:
+    """The text as word stems in its language, for the stem index."""
+    return " ".join(stem_word(w, language) for w in _TOKEN_RE.findall(text))
+
+
+def trigram_text(text: str) -> str:
+    """The text for the trigram index: lower case, without diacritics."""
+    return fold(text)
+
+
+def build_stem(query: str, languages: list[str]) -> list[str]:
+    """Like build(), but over word stems. Each term is stemmed in every language of the index."""
+    phrases, terms = parse(query)
+    langs = [lang for lang in dict.fromkeys(languages) if _stemmer(lang)] or [None]
+    parts = []
+    for p in phrases:
+        for lang in langs[:1]:  # a phrase is stemmed in the first language only
+            words = [stem_word(w, lang) for w in _TOKEN_RE.findall(p)]
+            if words:
+                parts.append('"' + " ".join(words) + '"')
+    for t in terms:
+        stems = list(dict.fromkeys(stem_word(t, lang) for lang in langs))
+        alts = [f'"{s}"*' if len(s) >= 3 else f'"{s}"' for s in stems if s]
+        if alts:
+            parts.append(alts[0] if len(alts) == 1 else "(" + " OR ".join(alts) + ")")
+    if not parts:
+        return []
+    out = [" AND ".join(parts)]
+    if len(parts) > 1 and not phrases:
+        out.append(" OR ".join(parts))
+    return out
+
+
+def build_trigram(query: str) -> list[str]:
+    """Like build(), but finds terms inside longer words. Terms shorter than TRIGRAM_MIN are left out."""
+    phrases, terms = parse(query)
+    parts = ['"' + fold(" ".join(_TOKEN_RE.findall(p))) + '"' for p in phrases if _TOKEN_RE.findall(p)]
+    long_terms = [t for t in terms if len(fold(t)) >= TRIGRAM_MIN]
+    parts += [f'"{fold(t)}"' for t in long_terms]
+    if not parts:
+        return []
+    # "All terms" only when no term was left out; otherwise only the "any term" level.
+    out = [" AND ".join(parts) if len(long_terms) == len(terms) else ""]
+    if (len(parts) > 1 or len(long_terms) < len(terms)) and not phrases:
+        out.append(" OR ".join(parts))
+    return out
+
+
 def match_terms(query: str) -> list[str]:
     """Folded words used to find the exact spoken moment inside a segment."""
     phrases, terms = parse(query)
@@ -82,13 +162,24 @@ def match_terms(query: str) -> list[str]:
     return [fold(w) for w in words]
 
 
-def first_word_time(words: list, terms: list[str]) -> float | None:
-    """Start time of the first word that begins with one of the terms."""
+def first_word_time(words: list, terms: list[str], language: str | None = None) -> float | None:
+    """Start time of the first spoken word that matches one of the terms.
+
+    A word matches when it begins with the term, has the same stem, or contains the term
+    (compounds, terms of TRIGRAM_MIN or more letters).
+    """
     if not terms:
         return None
-    for item in words:
-        word, start = item[0], item[1]
-        token = fold(word).strip(" .,!?;:\"'()[]{}…-–—")
-        if any(token.startswith(t) for t in terms):
-            return float(start)
+    stems = {stem_word(t, language) for t in terms}
+    for exact in (True, False):  # prefer a word that begins with the term
+        for item in words:
+            word, start = item[0], item[1]
+            token = fold(word).strip(" .,!?;:\"'()[]{}…-–—")
+            if not token:
+                continue
+            if exact:
+                if any(token.startswith(t) for t in terms):
+                    return float(start)
+            elif stem_word(token, language) in stems or any(len(t) >= TRIGRAM_MIN and t in token for t in terms):
+                return float(start)
     return None

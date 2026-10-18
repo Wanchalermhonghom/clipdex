@@ -50,7 +50,8 @@ PROFILES: dict[str, Profile] = {
         "apple-small", "Apple Silicon with less than 16 GB memory",
         {"siglip_model": "google/siglip2-base-patch16-256", "siglip_batch": 16, "qwen_enabled": False},
         ram_index_gb=3.0, ram_mcp_gb=1.5,
-        notes=["No scene (action) search and no semantic speech search. Exact speech and visual search work."]),
+        notes=["No scene (action) search and no semantic speech search. Visual search and exact speech search "
+               "work. Exact speech search also finds other word forms and parts of compound words."]),
     "apple-medium": Profile(
         "apple-medium", "Apple Silicon with 16-47 GB memory",
         {"siglip_model": "google/siglip2-so400m-patch14-384", "qwen_enabled": True,

@@ -30,6 +30,7 @@ How to search well:
 - mode="auto" uses all channels. The "matched" list in each result shows which channels agreed.
 - Use path_contains to stay inside one folder or project.
 - Weak matches are filtered out, so an empty result means "probably not in the footage".
+- "channels_off" in a result lists channels that cannot work with this index (e.g. no Qwen), with the reason.
 - Check important hits with view_frames before you cut. Use get_transcript to find exact
   sentence boundaries for speech cuts, and get_scenes to cut on picture changes.
 """

@@ -14,7 +14,7 @@ Jeder Treffer ist ein **Moment**: eine Datei plus Start und Ende in Sekunden.
 |---|---|---|
 | `visual` | [SigLIP 2](https://huggingface.co/google/siglip2-so400m-patch14-384) | Was auf einem Bild zu sehen ist: Objekte, Orte, Licht |
 | `scenes` | [Qwen3-VL-Embedding](https://huggingface.co/Qwen/Qwen3-VL-Embedding-2B) | Was in ein paar Sekunden passiert: Handlungen |
-| `speech` | [Whisper large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) + SQLite FTS5 | Genau gesprochene Wörter, mit Wort-Zeitstempel |
+| `speech` | [Whisper large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) + SQLite FTS5 | Genau gesprochene Wörter, mit Wort-Zeitstempel. Auch andere Wortformen („Bahnhöfe“ findet „Bahnhof“) und Teile zusammengesetzter Wörter („Maschine“ findet „Kaffeemaschine“) |
 | `speech_sem` | Qwen3-VL-Embedding | Worüber gesprochen wird, auch mit anderen Worten |
 
 Suchanfragen gehen auf Deutsch, Englisch und in den anderen Sprachen der Modelle.

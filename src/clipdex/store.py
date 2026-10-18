@@ -83,6 +83,9 @@ CREATE TRIGGER IF NOT EXISTS segments_ad AFTER DELETE ON segments BEGIN
     INSERT INTO segments_fts(segments_fts, rowid, text) VALUES ('delete', old.id, old.text);
 END;
 
+-- Word stems and folded text of each segment (rowid = segments.id), filled by Store.add_segments.
+CREATE VIRTUAL TABLE IF NOT EXISTS segments_stem USING fts5(text, tokenize='unicode61 remove_diacritics 2');
+
 CREATE TABLE IF NOT EXISTS speech_chunks(
     id INTEGER PRIMARY KEY,
     file_id INTEGER NOT NULL,
@@ -179,10 +182,41 @@ class Store:
                     self.set_meta("schema_version", str(SCHEMA_VERSION))
                 if self.get_meta("index_id") is None:
                     self.set_meta("index_id", uuid.uuid4().hex)
+                self._extra_fts()
                 self.conn.commit()
         version = self.get_meta("schema_version")
         if version is not None and int(version) != SCHEMA_VERSION:
             raise RuntimeError(f"Index schema version {version} is not supported (need {SCHEMA_VERSION}).")
+
+    # --- extra transcript indexes (stems, trigrams) ------------------------------------
+    def _extra_fts(self) -> None:
+        """Create the trigram index if SQLite supports it, and fill both extra indexes once."""
+        c = self.conn
+        try:
+            c.execute("CREATE VIRTUAL TABLE IF NOT EXISTS segments_tri USING fts5(text, tokenize='trigram')")
+            self.has_trigram = True
+        except sqlite3.OperationalError:  # SQLite older than 3.34
+            self.has_trigram = False
+        if self.get_meta("fts_extra") == "1":
+            return
+        c.execute("DELETE FROM segments_stem")
+        if self.has_trigram:
+            c.execute("DELETE FROM segments_tri")
+        rows = c.execute("SELECT s.id, s.text, f.language FROM segments s JOIN files f ON f.id = s.file_id").fetchall()
+        self._index_text([(r[0], r[1], r[2]) for r in rows])
+        self.set_meta("fts_extra", "1")
+
+    def _index_text(self, items: Sequence[tuple[int, str, str | None]]) -> None:
+        from . import fts
+
+        self.conn.executemany("INSERT INTO segments_stem(rowid, text) VALUES(?, ?)",
+                              [(sid, fts.stem_text(text, lang)) for sid, text, lang in items])
+        if getattr(self, "has_trigram", self._table_exists("segments_tri")):
+            self.conn.executemany("INSERT INTO segments_tri(rowid, text) VALUES(?, ?)",
+                                  [(sid, fts.trigram_text(text)) for sid, text, _ in items])
+
+    def _table_exists(self, name: str) -> bool:
+        return self.conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (name,)).fetchone() is not None
 
     def close(self) -> None:
         with self.lock:
@@ -286,6 +320,10 @@ class Store:
             c.execute("UPDATE frames SET emb=NULL WHERE file_id=?", (file_id,))
             self._touch("frames", file_id)
         elif stage == "speech":
+            ids = "(SELECT id FROM segments WHERE file_id=?)"
+            c.execute(f"DELETE FROM segments_stem WHERE rowid IN {ids}", (file_id,))
+            if self._table_exists("segments_tri"):
+                c.execute(f"DELETE FROM segments_tri WHERE rowid IN {ids}", (file_id,))
             c.execute("DELETE FROM segments WHERE file_id=?", (file_id,))
             c.execute("DELETE FROM speech_chunks WHERE file_id=?", (file_id,))
             self._touch("speech_chunks", file_id)
@@ -341,12 +379,15 @@ class Store:
                     f"SELECT DISTINCT file_id FROM {table} WHERE id IN ({','.join('?' * len(part))})", part):
                 self._touch(table, r[0])
 
-    def add_segments(self, file_id: int, segments: Sequence[dict]) -> None:
+    def add_segments(self, file_id: int, segments: Sequence[dict], language: str | None = None) -> None:
         with self.lock:
-            self.conn.executemany(
-                "INSERT INTO segments(file_id, start, end, text, words) VALUES(?,?,?,?,?)",
-                [(file_id, s["start"], s["end"], s["text"], json.dumps(s.get("words") or []))
-                 for s in segments])
+            items = []
+            for s in segments:
+                cur = self.conn.execute(
+                    "INSERT INTO segments(file_id, start, end, text, words) VALUES(?,?,?,?,?)",
+                    (file_id, s["start"], s["end"], s["text"], json.dumps(s.get("words") or [])))
+                items.append((int(cur.lastrowid), s["text"], language))
+            self._index_text(items)
 
     def add_chunks(self, file_id: int, chunks: Sequence[tuple[float, float, str]]) -> None:
         with self.lock:

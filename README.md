@@ -14,7 +14,7 @@ Every result is a **moment**: a file plus a start and end time in seconds.
 |---|---|---|
 | `visual` | [SigLIP 2](https://huggingface.co/google/siglip2-so400m-patch14-384) | What one frame shows: objects, places, light |
 | `scenes` | [Qwen3-VL-Embedding](https://huggingface.co/Qwen/Qwen3-VL-Embedding-2B) | What happens in a few seconds: actions |
-| `speech` | [Whisper large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) + SQLite FTS5 | The exact spoken words, with word timestamps |
+| `speech` | [Whisper large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) + SQLite FTS5 | The exact spoken words, with word timestamps. Also other word forms ("Bahnhöfe" finds "Bahnhof") and parts of compound words ("Maschine" finds "Kaffeemaschine") |
 | `speech_sem` | Qwen3-VL-Embedding | What the speaker talks about, also in other words |
 
 Queries work in English, German and the other languages that the models know.

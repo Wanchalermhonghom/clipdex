@@ -35,7 +35,7 @@ uv run clipdex mcp LIB             # MCP server on stdio (search only)
 | `src/clipdex/store.py` | SQLite schema, FTS5 triggers, float16 vector BLOBs |
 | `src/clipdex/search.py` | Four channels, weak-hit filters, reciprocal rank fusion into moments |
 | `src/clipdex/vectors.py` | Memory-mapped vector cache for search (`vectors/`), updated per changed file, rebuilt from SQLite |
-| `src/clipdex/fts.py` | Natural language to FTS5 query, German and English stop words |
+| `src/clipdex/fts.py` | Natural language to FTS5 queries over three transcript indexes (words, Snowball stems, trigrams), German and English stop words |
 | `src/clipdex/mcp_server.py` | MCP tools (mcp SDK 2.x, `MCPServer`): search, frames, transcript, scenes, similar shots |
 | `tests/conftest.py` | Synthetic color videos made with ffmpeg, fake SigLIP/Qwen/Whisper |
 

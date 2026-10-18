@@ -398,7 +398,59 @@ def test_prune_also_cleans_full_text_index(library, cfg):
     idx.run(prune=True)
     rows = idx.store.query("SELECT rowid FROM segments_fts WHERE segments_fts MATCH 'Bangkok'")
     assert rows == []
+    for table in ("segments_stem", "segments_tri"):  # the extra transcript indexes are cleaned too
+        assert idx.store.query(f"SELECT rowid FROM {table} WHERE {table} MATCH 'bangkok'") == []
     assert engine.search("Bangkok", mode="speech")["results"] == []
+
+
+GERMAN = {"A/red_blue.mp4": [
+    {"start": 1.0, "end": 5.0, "text": "Wir stehen am Bahnhof neben der Kaffeemaschine.",
+     "words": [["Wir", 1.0, 1.2], ["stehen", 1.2, 1.6], ["am", 1.6, 1.7], ["Bahnhof", 1.7, 2.3],
+               ["neben", 2.3, 2.6], ["der", 2.6, 2.7], ["Kaffeemaschine.", 2.8, 3.9]]},
+]}
+
+
+def test_german_word_forms_in_speech_search(library, cfg):
+    idx = Indexer(library, cfg, models=FakeModels(cfg, GERMAN), log=lambda m: None)
+    idx.run()
+    engine = SearchEngine(idx.index_dir, cfg, root=idx.root, models=FakeModels(cfg), use_qwen=False)
+
+    def best(query):
+        out = engine.search(query, mode="speech", explain=True)
+        return [(r["file"], r["best"]) for r in out["results"]], out["channels"]["speech"]["query"]
+
+    assert best("Bahnhof") == ([("A/red_blue.mp4", 1.7)], 'word: "Bahnhof"*')
+    hits, used = best("Bahnhöfe")  # plural: found through the word stem
+    assert hits == [("A/red_blue.mp4", 1.7)] and used.startswith("stem:")
+    hits, used = best("Maschine")  # end of a compound word: found through trigrams
+    assert hits == [("A/red_blue.mp4", 2.8)] and "trigram:" in used
+    assert best("gehen")[0] == []  # irregular verb forms need the Qwen speech channel
+
+
+def test_extra_transcript_indexes_are_filled_for_an_old_index(library, cfg):
+    idx = Indexer(library, cfg, models=FakeModels(cfg, GERMAN), log=lambda m: None)
+    idx.run()
+    for table in ("segments_stem", "segments_tri"):
+        idx.store.conn.execute(f"DELETE FROM {table}")
+    idx.store.conn.execute("DELETE FROM meta WHERE key='fts_extra'")
+    idx.store.commit()
+    idx.store.close()
+    from clipdex.store import Store
+
+    store = Store(idx.index_dir / "index.db")  # the writer fills them again
+    assert store.query("SELECT COUNT(*) AS n FROM segments_stem")[0]["n"] == 1
+    assert store.query("SELECT rowid FROM segments_tri WHERE segments_tri MATCH 'maschine'")
+
+
+def test_channels_off_are_reported(library, cfg):
+    idx, _, _ = build(library, cfg)
+    engine = SearchEngine(idx.index_dir, cfg, root=idx.root, models=FakeModels(cfg), use_qwen=False)
+    out = engine.search("blue", mode="action")
+    assert "Qwen is off" in out["channels_off"]["scenes"]
+    assert "channels_off" not in engine.search("blue", mode="visual") or \
+        set(engine.search("blue", mode="visual")["channels_off"]) == {"scenes"}
+    status = engine.status()["channels"]
+    assert status["visual"] == {"on": True} and status["scenes"]["on"] is False
 
 
 def test_cosine_channel_uses_query_baseline(engine):
