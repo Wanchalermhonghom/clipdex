@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -12,8 +15,9 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      # Actions are pinned by commit SHA. The comment names the release.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
       - name: Install ffmpeg
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -22,6 +26,8 @@ jobs:
             brew install ffmpeg
           fi
       - name: Install clipdex
-        run: uv sync --extra dev
+        run: uv sync --extra dev --locked
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
       - name: Fast tests (fake models)
         run: uv run pytest -q

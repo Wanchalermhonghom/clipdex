@@ -11,9 +11,9 @@ import json
 import sqlite3
 import threading
 import time
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
 
 import numpy as np
 
@@ -349,6 +349,6 @@ class Store:
             }
         keys = ["files", "duration_seconds", "missing", "failed", "frames_done", "visual_done",
                 "speech_done", "speech_emb_done", "scenes_done", "speech_seconds"]
-        out = {k: (v or 0) for k, v in zip(keys, files)}
+        out = {k: (v or 0) for k, v in zip(keys, files, strict=True)}
         out.update(counts)
         return out

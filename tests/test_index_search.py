@@ -8,9 +8,9 @@ import shutil
 
 import pytest
 
-from conftest import TRANSCRIPTS, FakeModels, make_color_video
 from clipdex.indexer import Indexer, IndexError_
 from clipdex.search import SearchEngine
+from conftest import TRANSCRIPTS, FakeModels, make_color_video
 
 
 def build(library, cfg, **kw):
@@ -276,7 +276,6 @@ def test_mcp_max_per_file_defaults_to_config(library, cfg):
 
 
 def test_search_works_when_the_drive_is_not_mounted(tmp_path, library, cfg):
-    import json
     from pathlib import Path
 
     from mcp import Client

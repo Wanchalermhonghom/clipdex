@@ -13,7 +13,7 @@ import logging
 import os
 import tempfile
 import unicodedata
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -146,7 +146,7 @@ class QwenEmbedder:
             conversations, image_patch_size=16, return_video_metadata=True, return_video_kwargs=True)
         videos = metadata = None
         if video_inputs is not None:
-            videos, metadata = (list(x) for x in zip(*video_inputs))
+            videos, metadata = (list(x) for x in zip(*video_inputs, strict=True))
         inputs = self.processor(
             text=text, images=images, videos=videos, video_metadata=metadata, truncation=True,
             max_length=MAX_LENGTH, padding=True, do_resize=False, return_tensors="pt", **video_kwargs)

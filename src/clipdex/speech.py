@@ -6,8 +6,9 @@ import logging
 import platform
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Protocol, Sequence
+from typing import Protocol
 
 import numpy as np
 

@@ -8,9 +8,9 @@ import os
 import shutil
 import sys
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable
 
 import numpy as np
 
@@ -473,7 +473,7 @@ class Indexer:
                 enc = self.models.siglip()
                 vecs = enc.encode_images([self.index_dir / r["image"] for r in frame_rows],
                                          batch=self.cfg.siglip_batch)
-                self.store.set_frame_embeddings([(r["id"], v) for r, v in zip(frame_rows, vecs)])
+                self.store.set_frame_embeddings([(r["id"], v) for r, v in zip(frame_rows, vecs, strict=True)])
             self.store.update_file(row.id, visual_done=1)
             self._commit()
             notes.append("visual")
@@ -500,7 +500,7 @@ class Indexer:
             if chunks:
                 qwen = self.models.qwen()
                 vecs = qwen.embed_texts([c["text"] for c in chunks])
-                self.store.set_chunk_embeddings([(c["id"], v) for c, v in zip(chunks, vecs)])
+                self.store.set_chunk_embeddings([(c["id"], v) for c, v in zip(chunks, vecs, strict=True)])
             self.store.update_file(row.id, speech_emb_done=1)
             self._commit()
 
@@ -518,7 +518,7 @@ class Indexer:
                 qwen = self.models.qwen()
                 sequences = [[str(self.index_dir / frame_rows[k]["image"]) for k in sc.frames] for sc in found]
                 vecs = qwen.embed_frame_sequences(sequences, batch=self.cfg.qwen_batch)
-                for sc, vec in zip(found, vecs):
+                for sc, vec in zip(found, vecs, strict=True):
                     self.store.add_scene(row.id, sc.start, sc.end, [frame_rows[k]["id"] for k in sc.frames], vec)
                 count = len(found)
             self.store.update_file(row.id, scenes_done=1)

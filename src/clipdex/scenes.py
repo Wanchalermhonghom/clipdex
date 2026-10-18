@@ -8,8 +8,8 @@ Raw camera clips rarely contain cuts, so a scene ends when the picture changes:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 

@@ -220,7 +220,8 @@ def memory_report() -> str:
             pass
     mx = sys.modules.get("mlx.core")
     if mx is not None:
-        for getter in (getattr(mx, "get_peak_memory", None), getattr(getattr(mx, "metal", None), "get_peak_memory", None)):
+        metal = getattr(mx, "metal", None)
+        for getter in (getattr(mx, "get_peak_memory", None), getattr(metal, "get_peak_memory", None)):
             if callable(getter):
                 try:
                     parts.append(f"MLX peak {getter() / GB:.1f} GB")

@@ -136,7 +136,7 @@ def run_setup(root: Path, index_dir: Path, profile_name: str | None, assume_yes:
         print(f"  {label:26s} {repo.removeprefix('fw:')}" + (f"  ({size:.1f} GB)" if size else ""))
     if download:
         if _ask(f"Download them now (about {total:.1f} GB, cached in ~/.cache/huggingface)?", assume_yes):
-            for label, repo in models:
+            for _label, repo in models:
                 print(f"Downloading {repo.removeprefix('fw:')} ...", flush=True)
                 _download(repo)
             print("Models are ready.")

@@ -153,6 +153,7 @@ Then put new values into `/Volumes/MySSD/.clipdex/config.toml`, for example `sce
 git clone https://github.com/Wanchalermhonghom/clipdex && cd clipdex
 uv sync --extra dev
 uv run pytest                  # fast tests with fake models, about 30 s
+uv run ruff check src tests    # lint
 uv run pytest -m models -s     # real models on sample media (downloads about 6 GB)
 ```
 

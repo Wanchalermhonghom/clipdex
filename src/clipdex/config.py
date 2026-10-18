@@ -97,7 +97,7 @@ class Config:
     def field_names(cls) -> set[str]:
         return {f.name for f in dataclasses.fields(cls)}
 
-    def apply(self, values: dict[str, Any], source: str = "config") -> "Config":
+    def apply(self, values: dict[str, Any], source: str = "config") -> Config:
         """Return a copy with values applied. Unknown keys raise an error."""
         known = self.field_names()
         unknown = sorted(set(values) - known)

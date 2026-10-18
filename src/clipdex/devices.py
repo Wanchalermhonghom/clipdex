@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def pick_device(preference: str = "auto") -> str:
     import torch
 
@@ -18,7 +18,7 @@ def pick_device(preference: str = "auto") -> str:
     return "cpu"
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _bf16_works(device: str) -> bool:
     import torch
 

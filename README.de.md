@@ -151,6 +151,7 @@ Trage neue Werte in `/Volumes/T7/.clipdex/config.toml` ein, z. B. `scene_floor =
 git clone https://github.com/Wanchalermhonghom/clipdex && cd clipdex
 uv sync --extra dev
 uv run pytest                  # schnelle Tests mit Fake-Modellen, ca. 30 s
+uv run ruff check src tests    # Lint
 uv run pytest -m models -s     # echte Modelle auf Beispielmedien (lädt ca. 6 GB)
 ```
 

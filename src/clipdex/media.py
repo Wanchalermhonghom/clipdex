@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import shutil
@@ -190,7 +191,7 @@ def max_gap(frames: list[Frame], duration: float) -> float:
     if not frames:
         return duration
     points = [0.0] + [f.t for f in frames] + [max(duration, frames[-1].t)]
-    return max(b - a for a, b in zip(points, points[1:]))
+    return max(b - a for a, b in itertools.pairwise(points))
 
 
 def extract_frames(src: Path, out_dir: Path, duration: float, interval: float = 2.0,

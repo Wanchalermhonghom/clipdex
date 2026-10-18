@@ -135,7 +135,8 @@ def make_color_video(path: Path, parts: list[tuple[str, float]], audio: bool = T
     path.parent.mkdir(parents=True, exist_ok=True)
     inputs, labels = [], []
     for i, (color, seconds) in enumerate(parts):
-        rgb = "0x%02x%02x%02x" % COLORS[color][0]
+        r, g, b = COLORS[color][0]
+        rgb = f"0x{r:02x}{g:02x}{b:02x}"
         inputs += ["-f", "lavfi", "-i", f"color=c={rgb}:s={size}:r=25:d={seconds}"]
         labels.append(f"[{i}:v]")
     total = sum(s for _, s in parts)

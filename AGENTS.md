@@ -9,6 +9,7 @@ Users run it on their own machine, so most changes are about fitting it to a mac
 ```bash
 uv sync --extra dev                # install (Python 3.11-3.13)
 uv run pytest                      # fast tests, fake models, ~30 s. Must pass before every commit.
+uv run ruff check src tests        # lint. Must pass before every commit.
 uv run pytest -m models -s         # real models on sample media (downloads ~6 GB, slow on CPU)
 uv run clipdex doctor              # check ffmpeg, torch device, speech backend
 uv run clipdex setup LIB           # detect hardware, write LIB/.clipdex/config.toml, download models
@@ -39,7 +40,7 @@ uv run clipdex mcp LIB             # MCP server on stdio (search only)
 
 ## Rules
 
-1. Run `uv run pytest` after every change. Add a test for every bug you fix. Fast tests never load real models.
+1. Run `uv run pytest` and `uv run ruff check src tests` after every change. Add a test for every bug you fix. Fast tests never load real models.
 2. The MCP server talks JSON-RPC on stdout. Do not print to stdout in code that the server runs. Use stderr or `logging`.
 3. Each indexing stage commits on its own, so a stopped run can continue. Only the main thread writes to the database. The prefetch thread only runs ffmpeg.
 4. Stored paths are relative to the library root and keep the bytes from the file system (macOS often uses NFD). Compare user input with `library.norm()`.
