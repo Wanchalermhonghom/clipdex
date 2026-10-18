@@ -42,7 +42,7 @@ def build_server(engine: SearchEngine) -> MCPServer:
         mode: Literal["auto", "visual", "action", "speech"] = "auto",
         limit: int = 10,
         path_contains: str | None = None,
-        max_per_file: int = 3,
+        max_per_file: int | None = None,
     ) -> str:
         """Search the footage library. Returns moments (file + start/end seconds) as JSON.
 
@@ -51,11 +51,12 @@ def build_server(engine: SearchEngine) -> MCPServer:
         mode: auto | visual | action | speech.
         limit: number of moments to return (1-50).
         path_contains: only search files whose path contains this text (case-insensitive).
-        max_per_file: at most this many moments from one file.
+        max_per_file: at most this many moments from one file (default: the max_per_file setting).
         """
         limit = max(1, min(int(limit), 50))
+        per_file = None if max_per_file is None else max(1, int(max_per_file))
         return _dump(engine.search(query, mode=mode, limit=limit, path_contains=path_contains,
-                                   max_per_file=max(1, int(max_per_file))))
+                                   max_per_file=per_file))
 
     @server.tool()
     def view_frames(frame_ids: list[int]) -> list:

@@ -250,6 +250,28 @@ def test_mcp_tools(engine):
     asyncio.run(run())
 
 
+def test_mcp_max_per_file_defaults_to_config(library, cfg):
+    import json
+
+    from mcp import Client
+
+    from clipdex.mcp_server import build_server
+
+    cfg = cfg.apply({"max_per_file": 1})
+    idx, _, _ = build(library, cfg)
+    # Without Qwen the transcript chunk does not join the two sentences: two moments in red_blue.mp4.
+    server = build_server(SearchEngine(idx.index_dir, cfg, root=idx.root, models=FakeModels(cfg), use_qwen=False))
+    query = {"query": "Kaffee Laptop", "mode": "speech"}
+
+    async def files(args):
+        async with Client(server) as client:
+            res = await client.call_tool("search_footage", args)
+            return [r["file"] for r in json.loads(res.content[0].text)["results"]]
+
+    assert asyncio.run(files(query)).count("A/red_blue.mp4") == 1  # the config value
+    assert asyncio.run(files({**query, "max_per_file": 2})).count("A/red_blue.mp4") == 2
+
+
 def test_cli_search_and_status(library, cfg, capsys, monkeypatch):
     idx, _, _ = build(library, cfg)
     import clipdex.search as search_mod
