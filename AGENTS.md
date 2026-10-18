@@ -10,11 +10,12 @@ Users run it on their own machine, so most changes are about fitting it to a mac
 uv sync --extra dev                # install (Python 3.11-3.13)
 uv run pytest                      # fast tests, fake models, ~30 s. Must pass before every commit.
 uv run ruff check src tests        # lint. Must pass before every commit.
-uv run pytest -m models -s         # real models on sample media (downloads ~6 GB, slow on CPU)
+uv run pytest -m models -s         # real models on sample media, also German speech (downloads ~8 GB, slow on CPU)
 uv run clipdex doctor              # check ffmpeg, torch device, speech backend
 uv run clipdex setup LIB           # detect hardware, write LIB/.clipdex/config.toml, download models
 uv run clipdex index LIB --limit 3 # test run; the last line shows "x realtime" and the peak memory
 uv run clipdex search "query" LIB --explain   # channel scores and thresholds
+uv run clipdex calibrate LIB --present "visual: ... @ FILE" --absent "..."  # suggest search floors
 uv run clipdex mcp LIB             # MCP server on stdio (search only)
 ```
 
@@ -36,6 +37,7 @@ uv run clipdex mcp LIB             # MCP server on stdio (search only)
 | `src/clipdex/search.py` | Four channels, weak-hit filters, reciprocal rank fusion into moments |
 | `src/clipdex/vectors.py` | Memory-mapped vector cache for search (`vectors/`), updated per changed file, rebuilt from SQLite |
 | `src/clipdex/fts.py` | Natural language to FTS5 queries over three transcript indexes (words, Snowball stems, trigrams), German and English stop words |
+| `src/clipdex/calibrate.py` | `clipdex calibrate`: probes (things in / not in the footage), floor suggestions, config writer |
 | `src/clipdex/mcp_server.py` | MCP tools (mcp SDK 2.x, `MCPServer`): search, frames, transcript, scenes, similar shots |
 | `tests/conftest.py` | Synthetic color videos made with ffmpeg, fake SigLIP/Qwen/Whisper |
 
@@ -77,12 +79,16 @@ Ask before you download models (about 3-23 GB, depending on the profile) and bef
      If the sum is above 75 % of the RAM, or the run crashed with an out-of-memory error, use a smaller
      profile, lower `qwen_batch` and `siglip_batch`, or set `qwen_enabled = false`.
    - For an exact peak on macOS: `/usr/bin/time -l uv run clipdex index LIB --limit 3`.
-4. **Calibrate the search.** Ask the user for 3-5 things they know are in the footage (and in which file),
-   and 2 things that are not. For each, run `uv run clipdex search "<thing>" LIB --explain --json`.
-   - A known thing must appear in the results. If not, lower its channel floor in `LIB/.clipdex/config.toml`
-     in steps of 0.02: `scene_floor` (action mode), `speech_sem_floor` (speech meaning), `visual_min_prob` (visual).
-   - A missing thing should give no results. If it does, raise the floor in steps of 0.02.
-   - Write a comment next to every changed value with the reason.
+4. **Calibrate the search.** Ask the user for 3-5 things they know are in the footage (with the mode and
+   a part of the file name) and 2 things that are not. Then run:
+   `uv run clipdex calibrate LIB --present "action: jemand trinkt aus einer Flasche @ IMG_2011" --present "visual: eine Katze @ IMG_2010" --absent "visual: Strand mit Palmen"`
+   - It shows the best score per channel for every probe and suggests floors: `visual_min_prob` (visual),
+     `scene_floor` (action), `speech_sem_floor` (speech meaning). A known thing must pass its own channel.
+     A missing thing must not pass any channel.
+   - Show the suggestions to the user. After the user agrees, run the same command with `--write`. It keeps
+     `config.toml.bak` and writes a comment with the reason above every changed value.
+   - "conflict" means that one floor cannot separate two probes. Ask the user to rephrase one of them.
+   - Run the probes again to check. `clipdex calibrate LIB` without probes asks for them in the terminal.
 5. **Connect the agent.** Run the `claude mcp add ...` command that `setup` printed. For Claude Desktop,
    add the server to `~/Library/Application Support/Claude/claude_desktop_config.json` and restart the app.
    Test it: ask the agent to call `index_status`.

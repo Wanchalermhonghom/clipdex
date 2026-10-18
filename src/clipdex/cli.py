@@ -1,4 +1,5 @@
-"""Command line interface: clipdex setup | index | search | status | transcript | scenes | similar | mcp | doctor."""
+"""Command line interface: clipdex setup | index | search | status | transcript | scenes | similar | calibrate |
+mcp | doctor."""
 
 from __future__ import annotations
 
@@ -139,6 +140,56 @@ def cmd_similar(args) -> int:
     engine = _engine(args)
     print(json.dumps(engine.similar_frames(args.frame_id, args.limit), ensure_ascii=False, indent=1))
     return 0
+
+
+def cmd_calibrate(args) -> int:
+    from . import calibrate
+
+    present, absent = list(args.present), list(args.absent)
+    interactive = not present and not absent and sys.stdin.isatty()
+    if interactive:
+        print("Name 3-5 things that ARE in your footage, one per line. Start with the mode and end with a part of\n"
+              "the file name, e.g.  action: jemand trinkt aus einer Flasche @ IMG_2011\n"
+              "Modes: visual (what a frame shows), action (what happens), speech (what is talked about).\n"
+              "Press Enter on an empty line to finish.")
+        present = _read_lines("in footage> ")
+        print("Name 2 things that are NOT in your footage, e.g.  visual: Strand mit Palmen")
+        absent = _read_lines("not there>  ")
+    if not present and not absent:
+        raise SystemExit('Give probes, e.g. --present "visual: eine Katze @ IMG_2010" --absent "Strand mit Palmen".')
+    probes = [calibrate.parse_probe(t, True) for t in present] + [calibrate.parse_probe(t, False) for t in absent]
+    engine = _engine(args)
+    for p in probes:
+        calibrate.measure(engine, p)
+    suggestions = calibrate.suggest(engine, probes)
+    if args.json:
+        print(json.dumps({"probes": [{"probe": p.label, "in_footage": p.present, "found": p.found,
+                                      "scores": p.scores, "kept": p.kept} for p in probes],
+                          "suggestions": [s.__dict__ for s in suggestions]}, ensure_ascii=False, indent=1))
+    else:
+        print(calibrate.report(probes, suggestions))
+    changes = [s for s in suggestions if s.value is not None]
+    write = args.write or (interactive and changes and input("\nWrite these values to config.toml? [y/N] ")
+                           .strip().lower() in ("y", "yes", "j", "ja"))
+    if write and changes:
+        config_path = _index_dir(args) / "config.toml"
+        backup = calibrate.write_config(config_path, changes)
+        print(f"\nWrote {config_path}" + (f" (old version: {backup.name})" if backup else "")
+              + ". Run the same probes again to check.", file=sys.stderr)
+    return 0
+
+
+def _read_lines(prompt: str) -> list[str]:
+    lines = []
+    while True:
+        try:
+            line = input(prompt).strip()
+        except EOFError:
+            break
+        if not line:
+            break
+        lines.append(line)
+    return lines
 
 
 def cmd_mcp(args) -> int:
@@ -297,6 +348,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=10)
     sp.add_argument("--no-qwen", action="store_true", help=argparse.SUPPRESS)
     sp.set_defaults(func=cmd_similar)
+
+    sp = sub.add_parser("calibrate", help="tune the search floors with things that are (or are not) in the footage")
+    common(sp)
+    sp.add_argument("--present", action="append", default=[], metavar="PROBE",
+                    help='a thing in the footage: "[visual|action|speech:] query @ part of the file name"')
+    sp.add_argument("--absent", action="append", default=[], metavar="PROBE",
+                    help='a thing that is not in the footage: "[mode:] query"')
+    sp.add_argument("--write", action="store_true", help="write the suggested values to config.toml (keeps a .bak)")
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--no-qwen", action="store_true", help="only calibrate the visual floor (less RAM)")
+    sp.set_defaults(func=cmd_calibrate)
 
     sp = sub.add_parser("mcp", help="run the MCP server (stdio) for Claude")
     common(sp)

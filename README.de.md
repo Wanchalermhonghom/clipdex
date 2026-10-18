@@ -138,7 +138,19 @@ Sieh dir die Werte mit `--explain` an:
 clipdex search "rotes Auto" /Volumes/T7 --explain
 ```
 
-Trage neue Werte in `/Volumes/T7/.clipdex/config.toml` ein, z. B. `scene_floor = 0.38`.
+`clipdex calibrate` macht das für dich. Nenne ein paar Dinge, die in deinem Footage vorkommen, und ein paar,
+die fehlen. Der Befehl zeigt die Werte und schlägt die Schwellen vor. `--write` schreibt sie in die Config
+(und behält eine `.bak`-Kopie):
+
+```bash
+clipdex calibrate /Volumes/T7 \
+  --present "action: jemand trinkt aus einer Flasche @ IMG_2011" \
+  --present "visual: eine Katze auf einem Parkplatz @ IMG_2010" \
+  --absent "visual: Strand mit Palmen"
+```
+
+Ohne `--present` und `--absent` fragt er im Terminal nach. Du kannst Werte auch selbst in
+`/Volumes/T7/.clipdex/config.toml` eintragen, z. B. `scene_floor = 0.38`.
 [clipdex.example.toml](clipdex.example.toml) zeigt alle Einstellungen mit ihren Standardwerten.
 
 ## Grenzen
@@ -157,7 +169,7 @@ git clone https://github.com/Wanchalermhonghom/clipdex && cd clipdex
 uv sync --extra dev
 uv run pytest                  # schnelle Tests mit Fake-Modellen, ca. 30 s
 uv run ruff check src tests    # Lint
-uv run pytest -m models -s     # echte Modelle auf Beispielmedien (lädt ca. 6 GB)
+uv run pytest -m models -s     # echte Modelle auf Beispielmedien, auch deutsche Sprache (lädt ca. 8 GB)
 ```
 
 Lies [AGENTS.md](AGENTS.md), bevor du Code änderst. Dort stehen die Projektkarte und die Regeln.

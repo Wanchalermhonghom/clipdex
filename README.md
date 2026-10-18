@@ -140,7 +140,18 @@ Look at the scores with `--explain`:
 clipdex search "red car" /Volumes/MySSD --explain
 ```
 
-Then put new values into `/Volumes/MySSD/.clipdex/config.toml`, for example `scene_floor = 0.38`.
+`clipdex calibrate` does this for you. Name a few things that are in your footage and a few that are not.
+It shows the scores and suggests the floors. `--write` puts them into the config (it keeps a `.bak` copy):
+
+```bash
+clipdex calibrate /Volumes/MySSD \
+  --present "action: someone drinks from a bottle @ IMG_2011" \
+  --present "visual: a cat in a parking lot @ IMG_2010" \
+  --absent "visual: a beach with palm trees"
+```
+
+Without `--present` and `--absent` it asks in the terminal. You can also put values into
+`/Volumes/MySSD/.clipdex/config.toml` yourself, for example `scene_floor = 0.38`.
 [clipdex.example.toml](clipdex.example.toml) lists every setting with its default.
 
 ## Limits
@@ -159,7 +170,7 @@ git clone https://github.com/Wanchalermhonghom/clipdex && cd clipdex
 uv sync --extra dev
 uv run pytest                  # fast tests with fake models, about 30 s
 uv run ruff check src tests    # lint
-uv run pytest -m models -s     # real models on sample media (downloads about 6 GB)
+uv run pytest -m models -s     # real models on sample media, also German speech (downloads about 8 GB)
 ```
 
 Read [AGENTS.md](AGENTS.md) before you change code. It has the project map and the rules.

@@ -13,4 +13,8 @@ this repository and keep their own licenses:
 - Whisper (OpenAI) and the mlx-community / faster-whisper conversions, MIT License
 - Silero VAD (Silero Team), MIT License
 
+tests/data/de_kinderministerium.flac and tests/data/de_landwirtschaft.flac are two
+sentences from VoxPopuli (https://huggingface.co/datasets/facebook/voxpopuli), CC0 1.0.
+Source: European Parliament plenary sessions, (c) European Union.
+
 clipdex calls the ffmpeg and ffprobe programs that you install yourself.

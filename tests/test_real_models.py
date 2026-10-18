@@ -121,3 +121,73 @@ def test_transcript_language(real_engine):
 def test_gibberish_finds_little(real_engine):
     results = _top(real_engine, "qwxzz blorf vrrnk", "visual")
     assert len(results) <= 1
+
+
+# --- German speech --------------------------------------------------------------------------------
+# Two sentences from VoxPopuli (CC0, European Parliament plenary sessions), in tests/data:
+#   de_kinderministerium.flac  "Ich kenne kein Land, in dem es ein eigenes Kinderministerium gibt."
+#   de_landwirtschaft.flac     "Es gibt eine Landwirtschaft, die sich an der Natur orientiert, und eine,
+#                               die das nicht tut."
+
+DATA = Path(__file__).parent / "data"
+
+
+@pytest.fixture(scope="module")
+def german_engine(tmp_path_factory):
+    from huggingface_hub import hf_hub_download
+
+    root = tmp_path_factory.mktemp("german")
+    still = ["-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "25", "-c:a", "aac", "-shortest"]
+    for image, audio, name in (("val2017/000000039769.jpg", "de_kinderministerium.flac", "kinder.mp4"),
+                               ("val2017/000000000632.jpg", "de_landwirtschaft.flac", "landwirtschaft.mp4")):
+        img = hf_hub_download("merve/coco", image, repo_type="dataset")
+        _ff("-loop", "1", "-i", img, "-i", str(DATA / audio), *still, str(root / name))
+    # Whisper large-v3-turbo (the default): whisper-tiny is too weak for German words.
+    cfg = Config(siglip_model="google/siglip2-base-patch16-256", qwen_batch=2, languages=["de", "en"])
+    idx = Indexer(root, cfg, log=print)
+    assert idx.run().failed == 0
+    return SearchEngine(idx.index_dir, cfg, root=root)
+
+
+def test_german_language_and_transcript(german_engine):
+    for name, word in (("kinder.mp4", "kinderministerium"), ("landwirtschaft.mp4", "landwirtschaft")):
+        tr = german_engine.transcript(name)
+        text = " ".join(s["text"] for s in tr["segments"]).lower()
+        print(f"\n{name}: {tr['language']} {text!r}")
+        assert tr["language"] == "de" and word in text
+
+
+@pytest.mark.parametrize("query,expected,index", [
+    ("Kinderministerium", "kinder.mp4", "word"),
+    ("Kinderministerien", "kinder.mp4", "stem"),  # plural
+    ("Ministerium", "kinder.mp4", "trigram"),  # end of a compound word
+    ("Wirtschaft", "landwirtschaft.mp4", "trigram"),
+])
+def test_german_word_forms(german_engine, query, expected, index):
+    out = german_engine.search(query, mode="speech", explain=True)
+    print(f"\n{query!r}: {[r['file'] for r in out['results']]} {out['channels'].get('speech')}")
+    assert out["results"] and out["results"][0]["file"] == expected
+    assert f"{index}:" in out["channels"]["speech"]["query"]
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("Bauern, die mit der Umwelt arbeiten", "landwirtschaft.mp4"),
+    ("eine Regierung, die sich um Kinder kümmert", "kinder.mp4"),
+])
+def test_german_speech_meaning(german_engine, query, expected):
+    results = _top(german_engine, query, "speech")
+    assert results and results[0]["file"] == expected
+
+
+def test_calibrate_on_german_speech(german_engine):
+    from clipdex import calibrate
+
+    probes = [calibrate.parse_probe("speech: Landwirtschaft und Natur @ landwirtschaft", True),
+              calibrate.parse_probe("speech: Fußball im Stadion", False)]
+    for p in probes:
+        calibrate.measure(german_engine, p)
+    suggestions = calibrate.suggest(german_engine, probes)
+    print("\n" + calibrate.report(probes, suggestions))
+    assert probes[0].scores.get("speech_sem") is not None
+    assert any(s.setting == "speech_sem_floor" for s in suggestions)
