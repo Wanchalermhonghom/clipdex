@@ -119,6 +119,7 @@ On a 16–24 GB Mac, start the server with `mcp ... --no-qwen` while you index. 
 - Moved and renamed files keep their index entry.
 - Deleted files are marked `missing`. `--prune` removes them. clipdex refuses to remove more than half of the index unless you add `--force`.
 - Files that fail are skipped. `clipdex status /Volumes/MySSD` shows the errors. `--retry-failed` tries them again.
+- After you change a setting, `--redo STAGE` runs that stage again, e.g. `--redo scenes` after a scene setting.
 - The index lives in `/Volumes/MySSD/.clipdex`. It travels with the drive. Use `--index-dir` to keep it somewhere else.
 
 ## Tune the search

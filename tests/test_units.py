@@ -162,3 +162,23 @@ def test_extract_audio(video_dir):
     audio = media.extract_audio(video_dir / "A" / "red_blue.mp4", 12.0)
     assert audio.dtype == np.float32 and abs(len(audio) / media.AUDIO_RATE - 12.0) < 0.2
     assert 0.05 < float(np.abs(audio).max()) <= 1.0
+
+
+def _unit(deg):
+    import math
+
+    r = math.radians(deg)
+    return np.array([math.cos(r), math.sin(r)], np.float32)
+
+
+def test_scene_cut_on_jump_and_on_slow_drift():
+    # jump: 0 -> 0 -> 30 degrees (cos 0.866 < 0.885 step), anchor rule alone would not cut (0.866 > 0.80)
+    embs = np.stack([_unit(0), _unit(0), _unit(30)])
+    out = scenes.segment([0, 2, 4], embs, duration=6.0, max_seconds=100, cut_similarity=0.80,
+                         step_similarity=0.885)
+    assert [(s.start, s.end) for s in out] == [(0, 4), (4, 6.0)]
+    # slow drift: 15 degrees per step (cos 0.966 > step), 45 degrees from the start (cos 0.707 < 0.80)
+    embs = np.stack([_unit(0), _unit(15), _unit(30), _unit(45), _unit(60)])
+    out = scenes.segment([0, 2, 4, 6, 8], embs, duration=10.0, max_seconds=100, cut_similarity=0.80,
+                         step_similarity=0.885)
+    assert [s.start for s in out] == [0, 6]

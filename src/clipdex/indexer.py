@@ -291,15 +291,15 @@ class Indexer:
     # --- run ------------------------------------------------------------------------------------
     def run(self, only: str | None = None, stages: Iterable[str] | None = None, limit: int | None = None,
             retry_failed: bool = False, prune: bool = False, reembed: Iterable[str] = (),
-            force: bool = False) -> RunReport:
+            force: bool = False, redo: Iterable[str] = ()) -> RunReport:
         with _Lock(self.index_dir / ".lock"):
             media.STOP.clear()
             try:
-                return self._run(only, stages, limit, retry_failed, prune, reembed, force)
+                return self._run(only, stages, limit, retry_failed, prune, reembed, force, list(redo))
             finally:
                 media.STOP.clear()
 
-    def _run(self, only, stages, limit, retry_failed, prune, reembed, force) -> RunReport:
+    def _run(self, only, stages, limit, retry_failed, prune, reembed, force, redo) -> RunReport:
         media.ensure_tools()
         started = time.time()
         for tmp in self.frames_dir.glob("*.tmp"):
@@ -316,8 +316,23 @@ class Indexer:
         if s.prune_refused:
             self.log("Warning: --prune would remove more than half of the index (or the folder looks empty). "
                      "Nothing was removed. Check the drive, then use --prune --force if this is correct.")
-        wanted = self._wanted_stages(stages)
+        wanted = self._wanted_stages(list(stages or []) + redo if stages else None)
         self._check_models(wanted, reembed)
+        if redo:
+            # Run these stages again (and the stages that depend on them), e.g. after a setting change.
+            unknown = set(redo) - set(STAGES)
+            if unknown:
+                raise IndexError_(f"Unknown stage(s) for --redo: {', '.join(sorted(unknown))}")
+            needle_redo = norm(only) if only else None
+            count = 0
+            for row in self.store.files(include_missing=False):
+                if needle_redo is None or needle_redo in norm(row.relpath):
+                    self.store.reset_stages(row.id, redo)
+                    if "frames" in redo:
+                        self._drop_frame_dir(row.id)
+                    count += 1
+            self._commit()
+            self.log(f"Redo {', '.join(redo)} for {count} file(s).")
 
         todo: list[FileRow] = []
         needle = norm(only) if only else None
@@ -495,7 +510,7 @@ class Indexer:
                                  for r in frame_rows])
                 times = [float(r["t"]) for r in frame_rows]
                 found = scenes.segment(times, embs, info.duration, self.cfg.scene_max_seconds,
-                                       self.cfg.scene_cut_similarity)
+                                       self.cfg.scene_cut_similarity, self.cfg.scene_step_similarity)
                 qwen = self.models.qwen()
                 sequences = [[str(self.index_dir / frame_rows[k]["image"]) for k in sc.frames] for sc in found]
                 vecs = qwen.embed_frame_sequences(sequences, batch=self.cfg.qwen_batch)

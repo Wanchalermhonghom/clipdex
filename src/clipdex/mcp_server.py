@@ -80,7 +80,7 @@ def build_server(engine: SearchEngine) -> MCPServer:
                        words: bool = False) -> str:
         """Return the transcript of one file with timestamps (seconds from file start).
 
-        file: path as shown in results (a unique end of the path is enough).
+        file: path as shown in results (a unique end of the path or part of the file name is enough).
         start, end: optional time range in seconds.
         words: also return word-level timestamps.
         """

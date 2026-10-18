@@ -1,7 +1,9 @@
 """Split a clip into short scenes from its frame embeddings.
 
-Raw camera clips rarely contain cuts, so a scene ends when the picture changes
-enough (SigLIP cosine to the scene's first frame drops) or when it gets too long.
+Raw camera clips rarely contain cuts, so a scene ends when the picture changes:
+- a jump: the frame differs a lot from the frame before (cosine < step_similarity),
+- a slow drift: the frame differs a lot from the scene's first frame (cosine < cut_similarity),
+- or the scene reaches max_seconds.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ class Scene:
 
 
 def segment(times: Sequence[float], embs: np.ndarray, duration: float, max_seconds: float = 10.0,
-            cut_similarity: float = 0.80) -> list[Scene]:
+            cut_similarity: float = 0.80, step_similarity: float = 0.885) -> list[Scene]:
     n = len(times)
     if n == 0:
         return []
@@ -29,7 +31,8 @@ def segment(times: Sequence[float], embs: np.ndarray, duration: float, max_secon
     first = 0
     for j in range(1, n):
         too_long = times[j] - times[first] >= max_seconds
-        changed = float(embs[j] @ embs[first]) < cut_similarity
+        changed = (float(embs[j] @ embs[j - 1]) < step_similarity
+                   or float(embs[j] @ embs[first]) < cut_similarity)
         if too_long or changed:
             scenes.append(Scene(times[first], times[j], list(range(first, j))))
             first = j

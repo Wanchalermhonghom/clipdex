@@ -58,7 +58,7 @@ def cmd_index(args) -> int:
         indexer = Indexer(Path(args.root).expanduser(), cfg, _index_dir(args))
         report = indexer.run(only=args.only, stages=stages, limit=args.limit,
                              retry_failed=args.retry_failed, prune=args.prune,
-                             reembed=args.reembed or [], force=args.force)
+                             reembed=args.reembed or [], force=args.force, redo=args.redo or [])
     except IndexError_ as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
@@ -239,6 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="with --prune: also remove when more than half of the index would go")
     sp.add_argument("--reembed", action="append", choices=["visual", "qwen"],
                     help="rebuild embeddings after a model change")
+    sp.add_argument("--redo", action="append", choices=["frames", "visual", "speech", "speech_emb", "scenes"],
+                    help="run a stage again for the selected files, e.g. after a setting change")
     sp.add_argument("--no-qwen", action="store_true", help="skip scene and transcript embeddings")
     sp.add_argument("--no-speech", action="store_true", help="skip transcription")
     sp.add_argument("--language", help="force a speech language, e.g. de or en (default: detect per file)")

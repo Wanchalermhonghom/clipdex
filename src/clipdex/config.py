@@ -57,7 +57,10 @@ class Config:
 
     # --- scenes (input for the action / scene embeddings) -------------------
     scene_max_seconds: float = 10.0
-    scene_cut_similarity: float = 0.80  # SigLIP cosine below this vs. scene start = new scene
+    scene_cut_similarity: float = 0.80  # SigLIP cosine below this vs. scene start = new scene (slow drift)
+    # SigLIP cosine below this vs. the previous frame = new scene (a jump). Calibrated on iPhone
+    # footage: changes scored 0.70-0.88, continuous selfie and pan shots 0.89-0.99.
+    scene_step_similarity: float = 0.885
     scene_max_frames: int = 8
 
     # --- search -------------------------------------------------------------

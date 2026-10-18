@@ -117,6 +117,7 @@ Auf einem Mac mit 16–24 GB startest du den Server beim Indexieren mit `mcp ...
 - Verschobene und umbenannte Dateien behalten ihren Index.
 - Gelöschte Dateien markiert clipdex als `missing`. `--prune` entfernt sie. Mehr als die Hälfte des Index entfernt clipdex nur mit `--force`.
 - Defekte Dateien überspringt clipdex. `clipdex status /Volumes/T7` zeigt die Fehler. `--retry-failed` versucht sie erneut.
+- Nach einer geänderten Einstellung startet `--redo STAGE` diesen Schritt neu, z. B. `--redo scenes` nach einer Szenen-Einstellung.
 - Der Index liegt in `/Volumes/T7/.clipdex`. Er wandert mit der SSD. Mit `--index-dir` liegt er woanders.
 
 ## Die Suche anpassen

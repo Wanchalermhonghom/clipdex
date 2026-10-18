@@ -29,9 +29,10 @@
 # qwen_dtype = "auto"  # auto | bfloat16 | float16 | float32
 # qwen_batch = 4
 
-# --- scenes ---
+# --- scenes (after a change: clipdex index LIB --redo scenes) ---
 # scene_max_seconds = 10.0
-# scene_cut_similarity = 0.8  # SigLIP cosine below this vs. scene start = new scene
+# scene_cut_similarity = 0.8  # SigLIP cosine below this vs. scene start = new scene (slow drift)
+# scene_step_similarity = 0.885  # SigLIP cosine below this vs. the previous frame = new scene (a jump)
 # scene_max_frames = 8
 
 # --- search ---

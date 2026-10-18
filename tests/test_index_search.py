@@ -181,6 +181,9 @@ def test_similar_transcript_and_files(engine):
     red = engine.search("red", mode="visual")["results"][0]
     sim = engine.similar_frames(red["frame_id"], limit=5)
     assert sim["results"] and sim["results"][0]["similarity"] == pytest.approx(1.0)
+    assert engine.transcript("red_bl")["file"] == "A/red_blue.mp4"  # part of the file name
+    with pytest.raises(ValueError, match="matches 2 files"):
+        engine.transcript("red")  # red_blue.mp4 and yellow_red.mkv
     tr = engine.transcript("red_blue.mp4", start=5.0)
     assert [s["text"][:5] for s in tr["segments"]] == ["Jetzt"]
     with pytest.raises(ValueError):
@@ -414,3 +417,12 @@ def test_scenes_with_cut_reasons(library, cfg):
     only = engine.scenes("red_blue.mp4", changes_only=True)["scenes"]
     assert [(s["start"], s["end"], s["cut"]) for s in only] == [(0.0, 6.0, "start"), (6.0, 12.0, "picture change")]
     assert only[1]["frame_id"] in only[1]["frame_ids"]
+
+
+def test_redo_runs_a_stage_again(library, cfg):
+    idx, models, _ = build(library, cfg)
+    calls = idx.models.qwen().calls
+    report = idx.run(redo=["scenes"], only="red_blue")
+    assert report.processed == 1 and idx.models.qwen().calls == calls + 1
+    assert idx.store.file_by_path("A/red_blue.mp4").scenes_done == 1
+    assert idx.store.file_by_path("B/green.mov").scenes_done == 1

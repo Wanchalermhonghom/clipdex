@@ -466,7 +466,8 @@ class SearchEngine:
                 needle = needle[len(root):]
         rows = self.store.files()
         candidates = [r for r in rows if norm(r.relpath) == needle] or \
-                     [r for r in rows if norm(r.relpath).endswith("/" + needle)]
+                     [r for r in rows if norm(r.relpath).endswith("/" + needle)] or \
+                     [r for r in rows if needle in norm(r.relpath).rsplit("/", 1)[-1]]  # part of the name
         if len(candidates) > 1:
             raise ValueError(f"'{file}' matches {len(candidates)} files; give more of the path")
         if not candidates:
@@ -505,14 +506,17 @@ class SearchEngine:
         times = [float(r["t"]) for r in rows]
         embs = np.stack([np.frombuffer(r["emb"], dtype=np.float16).astype(np.float32) for r in rows])
         max_seconds = math.inf if changes_only else self.cfg.scene_max_seconds
-        found = scene_split.segment(times, embs, f.duration or 0.0, max_seconds, self.cfg.scene_cut_similarity)
+        found = scene_split.segment(times, embs, f.duration or 0.0, max_seconds, self.cfg.scene_cut_similarity,
+                                    self.cfg.scene_step_similarity)
         for k, sc in enumerate(found):
             first = sc.frames[0]
             if k == 0:
                 cut, similarity = "start", None
             else:
-                similarity = float(embs[first] @ embs[found[k - 1].frames[0]])
-                cut = "picture change" if similarity < self.cfg.scene_cut_similarity else "length limit"
+                similarity = float(embs[first] @ embs[first - 1])  # vs. the frame before the cut
+                drift = float(embs[first] @ embs[found[k - 1].frames[0]])
+                changed = similarity < self.cfg.scene_step_similarity or drift < self.cfg.scene_cut_similarity
+                cut = "picture change" if changed else "length limit"
             out["scenes"].append({
                 "index": k + 1, "start": round(sc.start, 2), "end": round(sc.end, 2),
                 "start_tc": tc(sc.start), "end_tc": tc(sc.end), "cut": cut,

@@ -49,6 +49,7 @@ uv run clipdex mcp LIB             # MCP server on stdio (search only)
 8. Keep `embed_qwen.py` aligned with https://github.com/QwenLM/Qwen3-VL-Embedding (right padding, last-token pooling, instruction as system message).
 9. `moment_max_seconds` must be at least `scene_max_seconds` and `speech_chunk_seconds`. `Config.apply` checks this.
 10. When you add or change a setting, update `clipdex.example.toml` and the README tables.
+11. Stored results do not change when a setting changes. Tell the user to run `clipdex index LIB --redo STAGE` (frames, visual, speech, speech_emb or scenes).
 
 ## Procedure: adapt clipdex to this machine
 
