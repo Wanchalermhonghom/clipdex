@@ -275,6 +275,54 @@ def test_mcp_max_per_file_defaults_to_config(library, cfg):
     assert asyncio.run(files({**query, "max_per_file": 2})).count("A/red_blue.mp4") == 2
 
 
+def test_search_works_when_the_drive_is_not_mounted(tmp_path, library, cfg):
+    import json
+    from pathlib import Path
+
+    from mcp import Client
+
+    from clipdex.mcp_server import build_server
+
+    index_dir = tmp_path / "internal-ssd" / "clipdex-index"  # like --index-dir
+    idx = Indexer(library, cfg, index_dir=index_dir, models=FakeModels(cfg, TRANSCRIPTS), log=lambda m: None)
+    idx.run()
+    engine = SearchEngine(index_dir, cfg, models=FakeModels(cfg))  # root and drive name come from the index
+    hit = engine.search("blue", mode="visual")["results"][0]
+    assert hit["available"] is True and Path(hit["path"]).is_file()
+    assert hit["volume"] == (idx.store.get_meta("root_volume") or None)
+
+    library.rename(tmp_path / "elsewhere")  # the drive is unplugged
+    engine._available = (0.0, False)  # do not wait for the 2 s cache
+    hit = engine.search("blue", mode="visual")["results"][0]
+    assert hit["file"] == "A/red_blue.mp4" and hit["available"] is False and hit["path"] is None
+    tr = engine.transcript("red_blue.mp4")
+    assert tr["available"] is False and tr["path"] is None and tr["segments"]
+    assert engine.scenes("red_blue.mp4")["scenes"]
+    assert engine.status()["root_available"] is False
+
+    async def frames():
+        async with Client(build_server(engine)) as client:
+            res = await client.call_tool("view_frames", {"frame_ids": [hit["frame_id"]]})
+            return [c.type for c in res.content]
+
+    assert asyncio.run(frames()) == ["text", "image"]  # the frames live in the index
+
+    # An empty folder can stay at the mount path after the drive is gone (/Volumes/T7).
+    library.mkdir()
+    idx.store.set_meta("root_mount", str(library))
+    idx.store.commit()
+    engine._available = (0.0, True)
+    assert engine.search("blue", mode="visual")["results"][0]["available"] is False
+
+
+def test_mount_point_and_volume_name(tmp_path):
+    from clipdex.library import mount_point, volume_name
+
+    assert mount_point(tmp_path / "does" / "not" / "exist").exists()
+    assert os.path.ismount(mount_point(tmp_path))
+    assert volume_name(tmp_path.anchor) is None  # the system disk has no drive name
+
+
 def test_cli_search_and_status(library, cfg, capsys, monkeypatch):
     idx, _, _ = build(library, cfg)
     import clipdex.search as search_mod

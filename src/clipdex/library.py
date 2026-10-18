@@ -26,6 +26,20 @@ def default_index_dir(root: Path) -> Path:
     return root / INDEX_DIR_NAME
 
 
+def mount_point(path: Path) -> Path:
+    """The mount point that contains `path`, e.g. /Volumes/T7 for /Volumes/T7/Footage."""
+    p = Path(os.path.abspath(path))
+    while not os.path.ismount(p) and p != p.parent:
+        p = p.parent
+    return p
+
+
+def volume_name(path: Path) -> str | None:
+    """Name of the drive that holds `path` ("T7"), or None for the system disk."""
+    mp = mount_point(path)
+    return None if mp == Path(mp.anchor) else mp.name
+
+
 def _is_hidden(name: str) -> bool:
     return name.startswith(".")
 

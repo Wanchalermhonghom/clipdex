@@ -14,7 +14,13 @@ INSTRUCTIONS = """\
 Search a local video footage library that was indexed by clipdex.
 
 Every result is a moment: a file plus a time range in seconds from the start of that file
-(start, end, best). Paths are absolute when the drive is mounted.
+(start, end, best).
+
+Where the file is: "file" is the path inside the library folder, "volume" is the drive name
+(e.g. "T7"; null for the system disk). If "available" is true, "path" is the absolute path.
+If "available" is false, the drive is not mounted and "path" is null. Search, view_frames,
+get_transcript and get_scenes still work, because they read the index. Ask the user to connect
+the drive named in "volume" before anything opens or cuts the file.
 
 How to search well:
 - Describe what is visible or what happens in plain words, in English or German.
@@ -45,6 +51,8 @@ def build_server(engine: SearchEngine) -> MCPServer:
         max_per_file: int | None = None,
     ) -> str:
         """Search the footage library. Returns moments (file + start/end seconds) as JSON.
+
+        Each result also has volume, available and path (null when the drive is not mounted).
 
         query: what you look for, e.g. "laptop on a wooden desk", "ich laufe durch den Markt",
                or "\\"claude code\\"" for exact spoken words.
@@ -109,7 +117,7 @@ def build_server(engine: SearchEngine) -> MCPServer:
 
     @server.tool()
     def index_status() -> str:
-        """Show index statistics: files, hours of footage, stages done, failed files."""
+        """Show index statistics: files, hours of footage, stages done, failed files, drive mounted or not."""
         return _dump(engine.status())
 
     return server

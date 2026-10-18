@@ -81,6 +81,9 @@ def _print_results(data: dict) -> None:
         for name, ch in r["channels"].items():
             if "text" in ch:
                 print(f"      {name}: “{ch['text']}”")
+    if not results[0].get("available", True):
+        drive = results[0].get("volume") or "the library"
+        print(f"\nNote: the drive ({drive}) is not mounted. Connect it to open the files.")
     if "channels" in data:
         print("\nChannels:", json.dumps(data["channels"], ensure_ascii=False))
 

@@ -123,6 +123,8 @@ On a 16–24 GB Mac, start the server with `mcp ... --no-qwen` while you index. 
 - Files that fail are skipped. `clipdex status /Volumes/MySSD` shows the errors. `--retry-failed` tries them again.
 - After you change a setting, `--redo STAGE` runs that stage again, e.g. `--redo scenes` after a scene setting.
 - The index lives in `/Volumes/MySSD/.clipdex`. It travels with the drive. Use `--index-dir` to keep it somewhere else.
+- With the index on the internal SSD, search works also when the drive is not connected. Each result then shows
+  the drive name (`volume`) and `available: false`, and `path` is empty.
 
 ## Tune the search
 

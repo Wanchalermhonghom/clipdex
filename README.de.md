@@ -121,6 +121,8 @@ Auf einem Mac mit 16–24 GB startest du den Server beim Indexieren mit `mcp ...
 - Defekte Dateien überspringt clipdex. `clipdex status /Volumes/T7` zeigt die Fehler. `--retry-failed` versucht sie erneut.
 - Nach einer geänderten Einstellung startet `--redo STAGE` diesen Schritt neu, z. B. `--redo scenes` nach einer Szenen-Einstellung.
 - Der Index liegt in `/Volumes/T7/.clipdex`. Er wandert mit der SSD. Mit `--index-dir` liegt er woanders.
+- Liegt der Index auf der internen SSD, funktioniert die Suche auch ohne angeschlossenes Laufwerk. Jeder Treffer zeigt
+  dann den Laufwerksnamen (`volume`) und `available: false`. `path` ist dann leer.
 
 ## Die Suche anpassen
 

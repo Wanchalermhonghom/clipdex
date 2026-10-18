@@ -16,7 +16,9 @@ from __future__ import annotations
 import bisect
 import json
 import math
+import os
 import threading
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,7 +28,7 @@ import numpy as np
 from . import fts
 from . import scenes as scene_split
 from .config import Config
-from .library import norm
+from .library import norm, volume_name
 from .store import Store
 from .timefmt import tc
 
@@ -107,12 +109,17 @@ class SearchEngine:
         self.store = Store(self.index_dir / "index.db", readonly=True)
         stored_root = self.store.get_meta("root")
         self.root = (root or (Path(stored_root) if stored_root else None))
+        stored_volume = self.store.get_meta("root_volume")
+        if stored_volume is None and self.root is not None and self.root.is_dir():
+            stored_volume = volume_name(self.root) or ""
+        self.volume = stored_volume or None  # drive name, e.g. "T7"; None = system disk or unknown
         self.use_qwen = use_qwen and cfg.qwen_enabled
         self.models = models
         self._lock = threading.RLock()
         self._revision = -1
         self._siglip = None
         self._qwen = None
+        self._available = (0.0, False)
 
     # --- models ---------------------------------------------------------------------
     def _siglip_model(self):
@@ -185,8 +192,28 @@ class SearchEngine:
         best = min((j for j in (i - 1, i) if 0 <= j < len(times)), key=lambda j: abs(times[j] - t))
         return ids[best]
 
+    def root_available(self) -> bool:
+        """True when the library folder can be read now. False when its drive is not mounted."""
+        checked, value = self._available
+        now = time.monotonic()
+        if now - checked < 2.0:
+            return value
+        ok = self.root is not None and self.root.is_dir()
+        mount = self.store.get_meta("root_mount")
+        if ok and mount and Path(mount) != Path(Path(mount).anchor) and self.root.is_relative_to(mount):
+            # An empty folder can stay at /Volumes/T7 after the drive is gone.
+            ok = os.path.ismount(mount)
+        self._available = (now, ok)
+        return ok
+
     def abs_path(self, relpath: str) -> str | None:
         return str(self.root / relpath) if self.root else None
+
+    def location(self, relpath: str) -> dict:
+        """Where a file is: drive name, whether the drive is mounted, and the absolute path if it is."""
+        available = self.root_available()
+        return {"volume": self.volume, "available": available,
+                "path": self.abs_path(relpath) if available else None}
 
     # --- channels -------------------------------------------------------------------------------
     def _visual(self, query: str, allowed: set[int], diag: dict) -> list[Hit]:
@@ -400,7 +427,7 @@ class SearchEngine:
         out = {
             "rank": rank,
             "file": f.relpath,
-            "path": self.abs_path(f.relpath),
+            **self.location(f.relpath),
             "start": round(m.start, 2),
             "end": round(m.end, 2),
             "best": round(m.best, 2),
@@ -442,7 +469,7 @@ class SearchEngine:
                     continue  # one result per 10 s window
                 used[fid].append(t)
                 f = self.files[fid]
-                results.append({"rank": len(results) + 1, "file": f.relpath, "path": self.abs_path(f.relpath),
+                results.append({"rank": len(results) + 1, "file": f.relpath, **self.location(f.relpath),
                                 "at": round(t, 2), "at_tc": tc(t), "similarity": round(float(cos[i]), 4),
                                 "frame_id": int(self.frames.ids[i])})
             return {"frame_id": int(frame_id), "results": results}
@@ -493,7 +520,7 @@ class SearchEngine:
             if words:
                 line["words"] = json.loads(r["words"] or "[]")
             lines.append(line)
-        return {"file": f.relpath, "path": self.abs_path(f.relpath), "language": f.language,
+        return {"file": f.relpath, **self.location(f.relpath), "language": f.language,
                 "duration": f.duration, "speech_done": bool(f.speech_done), "segments": lines}
 
     def scenes(self, file: str, changes_only: bool = False) -> dict:
@@ -505,7 +532,7 @@ class SearchEngine:
         """
         f = self._resolve_file(file)
         rows = [r for r in self.store.frames_for_file(f.id) if r["emb"] is not None]
-        out = {"file": f.relpath, "path": self.abs_path(f.relpath), "duration": f.duration,
+        out = {"file": f.relpath, **self.location(f.relpath), "duration": f.duration,
                "visual_done": bool(f.visual_done), "scenes": []}
         if not rows:
             return out
@@ -544,7 +571,8 @@ class SearchEngine:
     def status(self) -> dict:
         s = self.store.stats()
         s["root"] = str(self.root) if self.root else None
-        s["root_available"] = bool(self.root and self.root.is_dir())
+        s["root_available"] = self.root_available()
+        s["volume"] = self.volume
         s["index_dir"] = str(self.index_dir)
         s["models"] = {"siglip": self.store.get_meta("model.siglip"), "qwen": self.store.get_meta("model.qwen")}
         s["duration_hours"] = round(s.pop("duration_seconds") / 3600, 2)

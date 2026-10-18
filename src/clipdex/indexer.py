@@ -16,7 +16,7 @@ import numpy as np
 
 from . import media, scenes, speech
 from .config import Config
-from .library import ScannedFile, default_index_dir, fingerprint, norm, scan_with_errors
+from .library import ScannedFile, default_index_dir, fingerprint, mount_point, norm, scan_with_errors, volume_name
 from .store import STAGES, FileRow, Store
 from .timefmt import short
 
@@ -160,8 +160,12 @@ class Indexer:
         self.models = models or Models(cfg)
         self.log = log
         self.store = Store(self.index_dir / "index.db")
-        if self.store.get_meta("root") != str(self.root):
-            self.store.set_meta("root", str(self.root))
+        # Remember the drive, so search can name it when it is not mounted.
+        location = {"root": str(self.root), "root_mount": str(mount_point(self.root)),
+                    "root_volume": volume_name(self.root) or ""}
+        if any(self.store.get_meta(k) != v for k, v in location.items()):
+            for k, v in location.items():
+                self.store.set_meta(k, v)
             self.store.commit()
 
     # --- sync -------------------------------------------------------------------------------
