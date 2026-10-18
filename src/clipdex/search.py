@@ -13,7 +13,6 @@ moments: a file plus a time range.
 
 from __future__ import annotations
 
-import bisect
 import json
 import math
 import os
@@ -31,6 +30,7 @@ from .config import Config
 from .library import norm, volume_name
 from .store import Store
 from .timefmt import tc
+from .vectors import VectorCache, VectorTable
 
 # How exact the time of a hit is: a spoken word, a frame, a scene, a 20 s transcript chunk.
 _PRECISION = {"speech": 3, "visual": 2, "scenes": 1, "speech_sem": 0}
@@ -67,37 +67,17 @@ class Moment:
     best: float = 0.0
 
 
-class _Table:
-    """Rows of one embedding table, cached in memory."""
-
-    def __init__(self, ids, file_ids, emb, **cols):
-        self.ids = np.asarray(ids, dtype=np.int64)
-        self.file_ids = np.asarray(file_ids, dtype=np.int64)
-        self.emb = emb
-        self.cols = cols
-        self.pos = {int(i): k for k, i in enumerate(self.ids)}
-
-    def __len__(self) -> int:
-        return len(self.ids)
-
-
-def _load_table(store: Store, sql: str, cols: list[str]) -> _Table:
-    rows = store.query(sql)
-    blobs = [r["emb"] for r in rows]
-    dim = len(blobs[0]) // 2 if blobs else 0
-    emb = np.frombuffer(b"".join(blobs), dtype=np.float16).reshape(len(blobs), dim) if blobs \
-        else np.zeros((0, 0), np.float16)
-    return _Table([r["id"] for r in rows], [r["file_id"] for r in rows], emb,
-                  **{c: [r[c] for r in rows] for c in cols})
-
-
-def _cosine(matrix: np.ndarray, query: np.ndarray, block: int = 65536) -> np.ndarray:
+def _cosine(matrix: np.ndarray, query: np.ndarray, block: int = 32768) -> np.ndarray:
+    """Dot products of all rows with the query, in blocks (the matrix can be a memory-mapped file)."""
     if len(matrix) == 0:
         return np.zeros(0, np.float32)
     q = np.asarray(query, dtype=np.float32).reshape(-1)
     out = np.empty(len(matrix), np.float32)
+    buf = np.empty((min(block, len(matrix)), matrix.shape[1]), np.float32)  # reused: no new memory per block
     for i in range(0, len(matrix), block):
-        out[i:i + block] = matrix[i:i + block].astype(np.float32) @ q
+        part = buf[: min(block, len(matrix) - i)]
+        np.copyto(part, matrix[i:i + len(part)])
+        np.matmul(part, q, out=out[i:i + len(part)])
     return out
 
 
@@ -120,6 +100,7 @@ class SearchEngine:
         self._siglip = None
         self._qwen = None
         self._available = (0.0, False)
+        self.cache = VectorCache(self.index_dir, self.store)
 
     # --- models ---------------------------------------------------------------------
     def _siglip_model(self):
@@ -156,25 +137,14 @@ class SearchEngine:
         if self._qwen is not None and self._qwen.model_name != self.store.get_meta("model.qwen"):
             self._qwen = None
         self.files = {r.id: r for r in self.store.files()}
-        self.frames = _load_table(
-            self.store, "SELECT id, file_id, t, image, emb FROM frames WHERE emb IS NOT NULL "
-                        "ORDER BY file_id, t", ["t", "image"])
-        self.scene_table = _load_table(
-            self.store, "SELECT id, file_id, start, end, frame_ids, emb FROM scenes ORDER BY file_id, start",
-            ["start", "end", "frame_ids"])
-        self.chunks = _load_table(
-            self.store, "SELECT id, file_id, start, end, text, emb FROM speech_chunks "
-                        "WHERE emb IS NOT NULL ORDER BY file_id, start", ["start", "end", "text"])
-        # per-file frame times for "nearest frame" lookups
-        self._frames_by_file: dict[int, tuple[list[float], list[int]]] = defaultdict(lambda: ([], []))
-        for k in range(len(self.frames)):
-            times, ids = self._frames_by_file[int(self.frames.file_ids[k])]
-            times.append(float(self.frames.cols["t"][k]))
-            ids.append(int(self.frames.ids[k]))
+        # Vectors stay in memory-mapped files; only the changed files are read again.
+        self.cache.sync()
+        tables = self.cache.tables
+        self.frames, self.scene_table, self.chunks = tables["frames"], tables["scenes"], tables["chunks"]
         self._revision = rev
 
     # --- helpers ------------------------------------------------------------------------------
-    def _file_mask(self, table: _Table, allowed: set[int] | None) -> np.ndarray:
+    def _file_mask(self, table: VectorTable, allowed: set[int] | None) -> np.ndarray:
         if allowed is None:
             return np.ones(len(table), dtype=bool)
         return np.isin(table.file_ids, np.fromiter(allowed, dtype=np.int64, count=len(allowed)))
@@ -185,12 +155,9 @@ class SearchEngine:
                 if not r.missing and (needle is None or needle in norm(r.relpath))}
 
     def nearest_frame(self, file_id: int, t: float) -> int | None:
-        times, ids = self._frames_by_file.get(file_id, ([], []))
-        if not times:
-            return None
-        i = bisect.bisect_left(times, t)
-        best = min((j for j in (i - 1, i) if 0 <= j < len(times)), key=lambda j: abs(times[j] - t))
-        return ids[best]
+        rows = self.store.query("SELECT id FROM frames WHERE file_id=? ORDER BY abs(t - ?), t LIMIT 1",
+                                (int(file_id), float(t)))
+        return int(rows[0]["id"]) if rows else None
 
     def root_available(self) -> bool:
         """True when the library folder can be read now. False when its drive is not mounted."""
@@ -237,12 +204,12 @@ class SearchEngine:
         span = self.cfg.frame_interval
         hits = []
         for k in order:
-            t = float(self.frames.cols["t"][k])
+            t = float(self.frames.a[k])
             hits.append(Hit("visual", int(self.frames.file_ids[k]), t, t + span, t,
                             enc.prob(float(logit[k])), float(logit[k]), ref=int(self.frames.ids[k])))
         return hits
 
-    def _cosine_channel(self, name: str, table: _Table, q: np.ndarray, allowed: set[int], floor: float,
+    def _cosine_channel(self, name: str, table: VectorTable, q: np.ndarray, allowed: set[int], floor: float,
                         margin: float, diag: dict) -> tuple[list[int], np.ndarray]:
         cos = _cosine(table.emb, q)
         mask = self._file_mask(table, allowed)
@@ -270,7 +237,7 @@ class SearchEngine:
                                           self.cfg.scene_margin, diag)
         hits = []
         for k in order:
-            s, e = float(self.scene_table.cols["start"][k]), float(self.scene_table.cols["end"][k])
+            s, e = float(self.scene_table.a[k]), float(self.scene_table.b[k])
             hits.append(Hit("scenes", int(self.scene_table.file_ids[k]), s, e, (s + e) / 2, float(cos[k]),
                             float(cos[k]), ref=int(self.scene_table.ids[k])))
         return hits
@@ -282,12 +249,23 @@ class SearchEngine:
         q = qwen.embed_texts([query], instruction=self.cfg.qwen_speech_instruction)[0]
         order, cos = self._cosine_channel("speech_sem", self.chunks, q, allowed,
                                           self.cfg.speech_sem_floor, self.cfg.speech_sem_margin, diag)
+        texts = self._chunk_texts([int(self.chunks.ids[k]) for k in order])
         hits = []
         for k in order:
-            s, e = float(self.chunks.cols["start"][k]), float(self.chunks.cols["end"][k])
+            s, e = float(self.chunks.a[k]), float(self.chunks.b[k])
+            cid = int(self.chunks.ids[k])
             hits.append(Hit("speech_sem", int(self.chunks.file_ids[k]), s, e, s, float(cos[k]),
-                            float(cos[k]), ref=int(self.chunks.ids[k]), text=self.chunks.cols["text"][k]))
+                            float(cos[k]), ref=cid, text=texts.get(cid, "")))
         return hits
+
+    def _chunk_texts(self, chunk_ids: list[int]) -> dict[int, str]:
+        out: dict[int, str] = {}
+        for i in range(0, len(chunk_ids), 500):
+            part = chunk_ids[i:i + 500]
+            for r in self.store.query(
+                    f"SELECT id, text FROM speech_chunks WHERE id IN ({','.join('?' * len(part))})", part):
+                out[int(r["id"])] = r["text"]
+        return out
 
     def _speech(self, query: str, allowed: set[int], diag: dict) -> list[Hit]:
         terms = fts.match_terms(query)
@@ -449,22 +427,23 @@ class SearchEngine:
     def similar_frames(self, frame_id: int, limit: int = 10, path_contains: str | None = None) -> dict:
         with self._lock:
             self._refresh()
-            k = self.frames.pos.get(int(frame_id))
-            if k is None:
+            src = self.store.query("SELECT file_id, t, emb FROM frames WHERE id=? AND emb IS NOT NULL",
+                                   (int(frame_id),))
+            if not src:
                 raise ValueError(f"Unknown frame_id {frame_id} (or it has no embedding yet)")
-            q = self.frames.emb[k].astype(np.float32)
+            q = np.frombuffer(src[0]["emb"], dtype=np.float16).astype(np.float32)
             cos = _cosine(self.frames.emb, q)
             allowed = self._allowed_files(path_contains)
             mask = self._file_mask(self.frames, allowed)
-            src_file, src_t = int(self.frames.file_ids[k]), float(self.frames.cols["t"][k])
-            same = (self.frames.file_ids == src_file) & (np.abs(np.asarray(self.frames.cols["t"]) - src_t) < 10.0)
+            src_file, src_t = int(src[0]["file_id"]), float(src[0]["t"])
+            same = (self.frames.file_ids == src_file) & (np.abs(self.frames.a - src_t) < 10.0)
             cos = np.where(mask & ~same, cos, -np.inf)
             results = []
             used: dict[int, list[float]] = defaultdict(list)
             for i in np.argsort(-cos):
                 if not np.isfinite(cos[i]) or len(results) >= limit:
                     break
-                fid, t = int(self.frames.file_ids[i]), float(self.frames.cols["t"][i])
+                fid, t = int(self.frames.file_ids[i]), float(self.frames.a[i])
                 if any(abs(t - u) < 10.0 for u in used[fid]):
                     continue  # one result per 10 s window
                 used[fid].append(t)

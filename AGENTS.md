@@ -34,6 +34,7 @@ uv run clipdex mcp LIB             # MCP server on stdio (search only)
 | `src/clipdex/indexer.py` | Sync with the disk, run stages per file, resume, prefetch thread |
 | `src/clipdex/store.py` | SQLite schema, FTS5 triggers, float16 vector BLOBs |
 | `src/clipdex/search.py` | Four channels, weak-hit filters, reciprocal rank fusion into moments |
+| `src/clipdex/vectors.py` | Memory-mapped vector cache for search (`vectors/`), updated per changed file, rebuilt from SQLite |
 | `src/clipdex/fts.py` | Natural language to FTS5 query, German and English stop words |
 | `src/clipdex/mcp_server.py` | MCP tools (mcp SDK 2.x, `MCPServer`): search, frames, transcript, scenes, similar shots |
 | `tests/conftest.py` | Synthetic color videos made with ffmpeg, fake SigLIP/Qwen/Whisper |
@@ -52,6 +53,8 @@ uv run clipdex mcp LIB             # MCP server on stdio (search only)
 9. `moment_max_seconds` must be at least `scene_max_seconds` and `speech_chunk_seconds`. `Config.apply` checks this.
 10. When you add or change a setting, update `clipdex.example.toml` and the README tables.
 11. Stored results do not change when a setting changes. Tell the user to run `clipdex index LIB --redo STAGE` (frames, visual, speech, speech_emb or scenes).
+12. SQLite is the source of truth for vectors. A `Store` method that adds, changes or deletes vectors must call `_touch`,
+    so the next `bump_revision` stamps the file and the search cache reads it again.
 
 ## Procedure: adapt clipdex to this machine
 

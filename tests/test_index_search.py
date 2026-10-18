@@ -404,14 +404,16 @@ def test_prune_also_cleans_full_text_index(library, cfg):
 def test_cosine_channel_uses_query_baseline(engine):
     import numpy as np
 
-    from clipdex.search import _Table
+    from clipdex.vectors import ROW, VectorTable
 
     rng = np.random.default_rng(0)
     n = 40
     emb = rng.normal(size=(n, 8)).astype(np.float32)
     emb /= np.linalg.norm(emb, axis=1, keepdims=True)
     q = emb[0].copy()
-    table = _Table(list(range(n)), [1] * n, emb.astype(np.float16), start=[0.0] * n, end=[1.0] * n)
+    rows = np.zeros(n, ROW)
+    rows["id"], rows["file"], rows["b"] = np.arange(n), 1, 1.0
+    table = VectorTable(rows, emb.astype(np.float16))
     diag = {}
     order, cos = engine._cosine_channel("scenes", table, q, {1}, floor=0.0, margin=0.5, diag=diag)
     baseline = np.percentile(emb @ q, 20)

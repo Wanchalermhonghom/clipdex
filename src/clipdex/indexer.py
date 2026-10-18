@@ -444,6 +444,7 @@ class Indexer:
         if limit:
             todo = todo[:limit]
         if not todo:
+            self._update_search_cache()  # moved, pruned or reset files can still change it
             self.log("Nothing to do. The index is up to date.")
             report.seconds = time.time() - started
             return report
@@ -466,6 +467,7 @@ class Indexer:
             finally:
                 self.models.release(model)
 
+        self._update_search_cache()
         report.failed = len(failed)
         done = {fid: d for fid, d in durations.items() if fid not in failed}
         report.processed = len(done)
@@ -478,6 +480,18 @@ class Indexer:
                  f"{short(report.media_seconds)} of footage in {short(report.seconds)}{speed}. "
                  f"Memory: {memory_report()}.")
         return report
+
+    def _update_search_cache(self) -> None:
+        """Bring the search cache up to date now, so the next search starts fast."""
+        from .vectors import VectorCache
+
+        try:
+            cache = VectorCache(self.index_dir, self.store)
+            cache.sync()
+            count = sum(len(t) for t in cache.tables.values())
+            self.log(f"Search cache: {count:,} vectors ({'rebuilt' if cache.last_sync == 'rebuild' else 'updated'}).")
+        except Exception as exc:  # noqa: BLE001 - search builds the cache itself when needed
+            self.log(f"Warning: the search cache was not updated ({exc}). The next search updates it.")
 
     def _run_pass(self, name: str, stages: set[str], rows: list[FileRow], failed: set[int],
                   durations: dict[int, float]) -> None:

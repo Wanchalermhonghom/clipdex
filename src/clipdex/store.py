@@ -11,6 +11,7 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,8 @@ import numpy as np
 SCHEMA_VERSION = 1
 STAGES = ("frames", "visual", "speech", "speech_emb", "scenes")
 
+# files.frames_rev / scenes_rev / chunks_rev: revision of the last change to the file's vectors,
+# for the search cache (vectors.py). No SQL comments inside CREATE TABLE: ALTER TABLE rewrites it.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 
@@ -44,7 +47,10 @@ CREATE TABLE IF NOT EXISTS files(
     scenes_done INTEGER NOT NULL DEFAULT 0,
     missing INTEGER NOT NULL DEFAULT 0,
     error TEXT,
-    updated_at REAL
+    updated_at REAL,
+    frames_rev INTEGER NOT NULL DEFAULT 0,
+    scenes_rev INTEGER NOT NULL DEFAULT 0,
+    chunks_rev INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS frames(
@@ -138,6 +144,8 @@ class FileRow:
 
 
 _FILE_COLUMNS = [f for f in FileRow.__dataclass_fields__]
+# Vector tables and the files column that stamps their last change.
+_REV_COLUMNS = {"frames": "frames_rev", "scenes": "scenes_rev", "speech_chunks": "chunks_rev"}
 
 
 class Store:
@@ -157,13 +165,20 @@ class Store:
             self.conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.RLock()
+        self._touched: dict[str, set[int]] = {t: set() for t in _REV_COLUMNS}
         if not readonly:
             with self.lock:
                 self.conn.execute("PRAGMA journal_mode=WAL")
                 self.conn.execute("PRAGMA synchronous=NORMAL")
                 self.conn.executescript(_SCHEMA)
+                cols = {r[1] for r in self.conn.execute("PRAGMA table_info(files)")}
+                for col in _REV_COLUMNS.values():  # indexes from before the search cache
+                    if col not in cols:
+                        self.conn.execute(f"ALTER TABLE files ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
                 if self.get_meta("schema_version") is None:
                     self.set_meta("schema_version", str(SCHEMA_VERSION))
+                if self.get_meta("index_id") is None:
+                    self.set_meta("index_id", uuid.uuid4().hex)
                 self.conn.commit()
         version = self.get_meta("schema_version")
         if version is not None and int(version) != SCHEMA_VERSION:
@@ -190,7 +205,22 @@ class Store:
         return int(value) if value else 0
 
     def bump_revision(self) -> None:
-        self.set_meta("revision", str(self.revision() + 1))
+        """Count a change. Files whose vectors changed get the new revision as their stamp."""
+        with self.lock:
+            rev = self.revision() + 1
+            self.set_meta("revision", str(rev))
+            for table, ids in self._touched.items():
+                if ids:
+                    ids_list = sorted(ids)
+                    for i in range(0, len(ids_list), 500):
+                        part = ids_list[i:i + 500]
+                        self.conn.execute(
+                            f"UPDATE files SET {_REV_COLUMNS[table]}=? WHERE id IN ({','.join('?' * len(part))})",
+                            (rev, *part))
+                    ids.clear()
+
+    def _touch(self, table: str, file_id: int) -> None:
+        self._touched[table].add(int(file_id))
 
     def commit(self) -> None:
         with self.lock:
@@ -199,6 +229,8 @@ class Store:
     def rollback(self) -> None:
         with self.lock:
             self.conn.rollback()
+            for ids in self._touched.values():
+                ids.clear()
 
     # --- files ----------------------------------------------------------------
     def _file(self, row: sqlite3.Row | None) -> FileRow | None:
@@ -249,15 +281,20 @@ class Store:
         c = self.conn
         if stage == "frames":
             c.execute("DELETE FROM frames WHERE file_id=?", (file_id,))
+            self._touch("frames", file_id)
         elif stage == "visual":
             c.execute("UPDATE frames SET emb=NULL WHERE file_id=?", (file_id,))
+            self._touch("frames", file_id)
         elif stage == "speech":
             c.execute("DELETE FROM segments WHERE file_id=?", (file_id,))
             c.execute("DELETE FROM speech_chunks WHERE file_id=?", (file_id,))
+            self._touch("speech_chunks", file_id)
         elif stage == "speech_emb":
             c.execute("UPDATE speech_chunks SET emb=NULL WHERE file_id=?", (file_id,))
+            self._touch("speech_chunks", file_id)
         elif stage == "scenes":
             c.execute("DELETE FROM scenes WHERE file_id=?", (file_id,))
+            self._touch("scenes", file_id)
         else:
             raise ValueError(stage)
 
@@ -295,6 +332,14 @@ class Store:
         with self.lock:
             self.conn.executemany(
                 "UPDATE frames SET emb=? WHERE id=?", [(to_blob(v), fid) for fid, v in items])
+            self._touch_rows("frames", [fid for fid, _ in items])
+
+    def _touch_rows(self, table: str, row_ids: Sequence[int]) -> None:
+        for i in range(0, len(row_ids), 500):
+            part = list(row_ids[i:i + 500])
+            for r in self.conn.execute(
+                    f"SELECT DISTINCT file_id FROM {table} WHERE id IN ({','.join('?' * len(part))})", part):
+                self._touch(table, r[0])
 
     def add_segments(self, file_id: int, segments: Sequence[dict]) -> None:
         with self.lock:
@@ -319,6 +364,7 @@ class Store:
         with self.lock:
             self.conn.executemany(
                 "UPDATE speech_chunks SET emb=? WHERE id=?", [(to_blob(v), cid) for cid, v in items])
+            self._touch_rows("speech_chunks", [cid for cid, _ in items])
 
     def add_scene(self, file_id: int, start: float, end: float, frame_ids: Sequence[int],
                   emb: np.ndarray) -> None:
@@ -326,6 +372,7 @@ class Store:
             self.conn.execute(
                 "INSERT INTO scenes(file_id, start, end, frame_ids, emb) VALUES(?,?,?,?,?)",
                 (file_id, start, end, json.dumps(list(frame_ids)), to_blob(emb)))
+            self._touch("scenes", file_id)
 
     # --- read helpers for search ---------------------------------------------------
     def query(self, sql: str, params: Sequence = ()) -> list[sqlite3.Row]:

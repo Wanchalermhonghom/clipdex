@@ -50,7 +50,8 @@ clipdex runs the models one after the other: first SigLIP for all files, then Wh
 Only one model is in memory at a time. Each line shows the time left in the current pass (ETA).
 On a fanless MacBook Air, `clipdex index ... --throttle` uses smaller batches and pauses 5 s after each file.
 
-Everything goes into one SQLite file and a folder of small JPEG frames: about 55 MB per hour of footage.
+Everything goes into one SQLite file, a folder of small JPEG frames and a search cache (`vectors/`): about 55 MB per hour of footage.
+The search maps the cache files instead of loading all vectors into memory, so its memory does not grow with the library.
 
 ## Fit clipdex to your machine
 
@@ -116,7 +117,7 @@ The MCP server gives the agent these tools:
 | `list_files` | Files with duration, resolution and language |
 | `index_status` | Statistics and failed files |
 
-The MCP server only reads the index. You can search while the indexer runs.
+The MCP server does not change the index. You can search while the indexer runs: the search reads only the changed files again.
 On a 16–24 GB Mac, start the server with `mcp ... --no-qwen` while you index. Then it uses less memory.
 
 ## Keep the index up to date
