@@ -744,4 +744,7 @@ class Indexer:
             self.store.update_file(row.id, scenes_done=1)
             self._commit()
             notes.append(_count(count, "scene"))
+        if row.error and info is None:  # a pass without a probe (qwen) worked for a retried file
+            self.store.update_file(row.id, error=None)
+            self._commit()
         return " · ".join(notes) if notes else "up to date"

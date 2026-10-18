@@ -697,3 +697,20 @@ def test_frame_cleanup_deletes_only_frame_files(library, cfg):
     Indexer(library, cfg, models=FakeModels(cfg, TRANSCRIPTS), log=lambda m: None).run()  # packs the frames
     assert (folder / "notes.txt").exists() and not list(folder.glob("*.jpg"))
     assert (idx.index_dir / "frames" / "2024").is_dir()
+
+
+def test_retry_clears_the_error_of_a_qwen_failure(library, cfg, monkeypatch):
+    from conftest import FakeQwen
+
+    working = FakeQwen.embed_frame_sequences
+
+    def out_of_memory(self, sequences, batch=4):
+        raise MemoryError("qwen out of memory")
+
+    monkeypatch.setattr(FakeQwen, "embed_frame_sequences", out_of_memory)
+    idx, _, report = build(library, cfg)
+    assert report.failed == 3
+    monkeypatch.setattr(FakeQwen, "embed_frame_sequences", working)
+    report = idx.run(retry_failed=True)
+    assert report.processed == 3 and report.failed == 0
+    assert all(r.error is None for r in idx.store.files()) and idx.store.stats()["failed"] == 0
