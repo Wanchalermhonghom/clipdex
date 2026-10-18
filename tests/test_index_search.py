@@ -103,6 +103,54 @@ def test_failed_file_is_recorded_and_skipped(library, cfg):
     assert report.skipped_failed == 1 and report.processed == 0
 
 
+def test_one_model_at_a_time_with_progress(library, cfg, monkeypatch):
+    from clipdex import indexer as indexer_mod
+
+    pauses = []
+    monkeypatch.setattr(indexer_mod, "_pause", pauses.append)
+    cfg = cfg.apply({"pause_seconds": 1.5})
+    models = FakeModels(cfg, TRANSCRIPTS)
+    logs: list[str] = []
+    report = Indexer(library, cfg, models=models, log=logs.append).run()
+    assert report.processed == 3 and report.failed == 0
+    assert models.max_loaded == 1  # SigLIP, Whisper and Qwen were never in memory together
+    assert models.released == ["siglip", "asr", "qwen"]
+    assert [m.split(":")[0] for m in logs if m.startswith("Pass ")] == ["Pass 1/3", "Pass 2/3", "Pass 3/3"]
+    visual = [m for m in logs if m.startswith("[visual ")]
+    # no ETA after the first file (it includes the model load) and after the last one
+    assert len(visual) == 3 and ["ETA" in m for m in visual] == [False, True, False]
+    assert "x realtime" in logs[-1] and logs[-1].startswith("Done: 3 file(s)")
+    assert pauses == [1.5] * 6  # after each file except the last one of each pass: 3 passes x 2
+
+
+def test_eta_uses_footage_seconds(monkeypatch):
+    from types import SimpleNamespace
+
+    from clipdex import indexer as indexer_mod
+
+    now = [100.0]
+    monkeypatch.setattr(indexer_mod.time, "time", lambda: now[0])
+    # four files: 60 s each when known; the last one was never probed (size only)
+    rows = [SimpleNamespace(size=600, duration=60.0), SimpleNamespace(size=600, duration=None),
+            SimpleNamespace(size=600, duration=60.0), SimpleNamespace(size=1200, duration=None)]
+    eta = indexer_mod._Eta(rows)
+    now[0] += 50.0  # first file: model load + work
+    eta.done(0, 60.0)
+    assert eta.text(0) == ""
+    now[0] += 30.0  # second file: 60 s of footage in 30 s = 2x realtime
+    eta.done(1, 60.0)
+    # left: 60 s (known) + 1200 bytes at 10 bytes per second = 120 s -> 180 s at 2x = 90 s
+    assert eta.text(1) == "  ETA 1:30"
+
+
+def test_throttle_settings():
+    from clipdex.config import Config
+
+    cfg = Config(siglip_batch=32, qwen_batch=4, pause_seconds=10.0).throttled()
+    assert (cfg.siglip_batch, cfg.qwen_batch, cfg.pause_seconds) == (8, 1, 10.0)
+    assert Config(siglip_batch=4).throttled().siglip_batch == 4
+
+
 def test_only_and_limit(library, cfg):
     idx, _, report = build(library, cfg, only="b/", limit=1)
     assert report.processed == 1

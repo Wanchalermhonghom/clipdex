@@ -13,7 +13,7 @@ uv run ruff check src tests        # lint. Must pass before every commit.
 uv run pytest -m models -s         # real models on sample media (downloads ~6 GB, slow on CPU)
 uv run clipdex doctor              # check ffmpeg, torch device, speech backend
 uv run clipdex setup LIB           # detect hardware, write LIB/.clipdex/config.toml, download models
-uv run clipdex index LIB --limit 3 # test run; prints "x realtime" per file and peak memory at the end
+uv run clipdex index LIB --limit 3 # test run; the last line shows "x realtime" and the peak memory
 uv run clipdex search "query" LIB --explain   # channel scores and thresholds
 uv run clipdex mcp LIB             # MCP server on stdio (search only)
 ```
@@ -43,6 +43,7 @@ uv run clipdex mcp LIB             # MCP server on stdio (search only)
 1. Run `uv run pytest` and `uv run ruff check src tests` after every change. Add a test for every bug you fix. Fast tests never load real models.
 2. The MCP server talks JSON-RPC on stdout. Do not print to stdout in code that the server runs. Use stderr or `logging`.
 3. Each indexing stage commits on its own, so a stopped run can continue. Only the main thread writes to the database. The prefetch thread only runs ffmpeg.
+   The indexer runs one pass per model (SigLIP, Whisper, Qwen) and unloads each model after its pass. Keep only one model loaded at a time.
 4. Stored paths are relative to the library root and keep the bytes from the file system (macOS often uses NFD). Compare user input with `library.norm()`.
 5. All times are seconds from the start of the file.
 6. A different embedding model makes old vectors useless. The index stores the model names in `meta`. Changing a model needs `clipdex index LIB --reembed visual` or `--reembed qwen`.
@@ -65,7 +66,9 @@ Ask before you download models (about 3-23 GB, depending on the profile) and bef
    Tell the user the detected machine, the profile and the memory estimate. Use `--profile NAME`
    to choose another one (`uv run clipdex setup --list`).
 3. **Test run.** Run `uv run clipdex index LIB --limit 3` and read the output:
-   - `x realtime` per file. Below 1x on Apple Silicon: check the `mps` device, then try
+   - `x realtime` on the last line (`Done: ...`) is the speed of the whole run. The indexer runs one pass
+     per model (visual, speech, qwen), so a per-file line only shows the speed of one pass.
+     Below 1x on Apple Silicon: check the `mps` device, then try
      `frame_max_side = 384`, `frame_interval = 3.0` or `qwen_batch = 2`.
    - The last line `Memory: ...`. On macOS add the "process peak" and the "torch MPS" and "MLX" values.
      If the sum is above 75 % of the RAM, or the run crashed with an out-of-memory error, use a smaller
@@ -82,6 +85,7 @@ Ask before you download models (about 3-23 GB, depending on the profile) and bef
    Test it: ask the agent to call `index_status`.
 6. **Full index.** Tell the user to run `caffeinate -i clipdex index LIB` (macOS, keeps the Mac awake)
    in their own terminal. It can take hours. Ctrl-C is safe; the same command continues.
+   On a fanless MacBook Air, add `--throttle` (smaller batches, 5 s pause after each file).
 7. **Report.** Give the user: profile, measured speed, measured memory, changed settings.
 
 ## Extend clipdex

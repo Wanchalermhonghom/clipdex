@@ -150,7 +150,7 @@ def run_setup(root: Path, index_dir: Path, profile_name: str | None, assume_yes:
         mcp_cmd += ["--index-dir", str(index_dir)]
     print("\nNext steps:")
     print(f"  1. Test with 3 files:   {APP} index {root} --limit 3")
-    print("     Check 'x realtime' and the memory line at the end.")
+    print("     The last line shows the speed (x realtime) and the peak memory.")
     print(f"  2. Index everything:    {APP} index {root}")
     print(f"  3. Search:              {APP} search \"laptop on a desk\" {root}")
     claude = shutil.which("claude")

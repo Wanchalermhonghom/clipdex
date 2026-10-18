@@ -116,11 +116,33 @@ class FakeModels(Models):
         self._qwen = FakeQwen()
         self.transcripts = transcripts or {}
         self.transcribed: list[str] = []
+        self.loaded: set[str] = set()  # models in use right now
+        self.max_loaded = 0
+        self.released: list[str] = []
+
+    def _use(self, kind):
+        self.loaded.add(kind)
+        self.max_loaded = max(self.max_loaded, len(self.loaded))
+
+    def siglip(self):
+        self._use("siglip")
+        return self._siglip
+
+    def qwen(self):
+        if not self.cfg.qwen_enabled:
+            return None
+        self._use("qwen")
+        return self._qwen
+
+    def release(self, kind):  # keep the fakes, only record the call
+        self.released.append(kind)
+        self.loaded.discard(kind)
 
     def asr_enabled(self):
         return self.cfg.asr_backend != "none"
 
     def transcribe(self, audio, duration, relpath=""):
+        self._use("asr")
         self.transcribed.append(relpath)
         segs = []
         for s in self.transcripts.get(relpath, []):
@@ -191,6 +213,22 @@ def library(tmp_path, video_dir) -> Path:
     shutil.copy(root / "B" / "green.mov", root / "CacheClip" / "cache.mov")
     (root / "notes.txt").write_text("not a video")
     return root
+
+
+@pytest.fixture(autouse=True)
+def _no_real_models(request, monkeypatch):
+    """Fast tests must never load (or download) a real model."""
+    if "models" in request.keywords:
+        return
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a fast test tried to load a real model")
+
+    from clipdex import embed_qwen, embed_siglip
+
+    monkeypatch.setattr(embed_siglip.SiglipEncoder, "__init__", refuse)
+    monkeypatch.setattr(embed_qwen.QwenEmbedder, "__init__", refuse)
+    monkeypatch.setattr(speech, "make_backend", refuse)
 
 
 @pytest.fixture()

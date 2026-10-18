@@ -24,6 +24,9 @@
 # min_speech_seconds = 1.0  # less detected speech than this = no transcription
 # speech_chunk_seconds = 20.0  # length of transcript chunks for semantic speech search
 
+# --- load ---
+# pause_seconds = 0.0  # pause after each file, e.g. to keep a fanless Mac cooler
+
 # --- models ---
 # device = "auto"  # auto | mps | cuda | cpu
 # siglip_model = "google/siglip2-so400m-patch14-384"

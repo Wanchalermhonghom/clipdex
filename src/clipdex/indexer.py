@@ -28,6 +28,13 @@ DEPENDS = {
     "speech_emb": {"speech"},
 }
 
+# The indexer runs one pass per model over all files: (name, stages, model).
+PASSES = (
+    ("visual", ("frames", "visual"), "siglip"),
+    ("speech", ("speech",), "asr"),
+    ("qwen", ("speech_emb", "scenes"), "qwen"),
+)
+
 
 class IndexError_(RuntimeError):
     """Configuration problem that stops the run (named to avoid shadowing IndexError)."""
@@ -35,6 +42,38 @@ class IndexError_(RuntimeError):
 
 def log_stderr(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+def _pause(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def free_memory() -> None:
+    """Give memory of unloaded models back: Python objects, then the PyTorch and MLX caches."""
+    import gc
+
+    gc.collect()
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            elif torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 - only a cache
+            pass
+    mx = sys.modules.get("mlx.core")
+    if mx is not None:
+        clear = getattr(mx, "clear_cache", None) or getattr(getattr(mx, "metal", None), "clear_cache", None)
+        if callable(clear):
+            try:
+                clear()
+            except Exception:  # noqa: BLE001 - only a cache
+                pass
 
 
 class Models:
@@ -72,6 +111,19 @@ class Models:
             self._asr = speech.make_backend(self.cfg.asr_backend, self.cfg.asr_model, self.cfg.device)
             self._asr_loaded = True
         return self._asr
+
+    def release(self, kind: str) -> None:
+        """Unload one model ("siglip", "asr" or "qwen"). The next use loads it again."""
+        if kind == "siglip":
+            self._siglip = None
+        elif kind == "qwen":
+            self._qwen = None
+        elif kind == "asr":
+            close = getattr(self._asr, "close", None)
+            if callable(close):
+                close()
+            self._asr, self._asr_loaded = None, False
+        free_memory()
 
     def transcribe(self, audio: np.ndarray, duration: float, relpath: str = "") -> speech.Transcript:
         backend = self.asr()
@@ -114,6 +166,46 @@ class Prepared:
     error: Exception | None = None
     seconds: float = 0.0
     warnings: list[str] = field(default_factory=list)
+
+
+class _Eta:
+    """Time left in a pass, from the footage seconds still to do and the speed so far.
+
+    The first file is left out of the speed (it includes loading the model). Files that were
+    never probed get a duration from their size and the bit rate of the files done so far.
+    """
+
+    def __init__(self, rows: list[FileRow]):
+        self.sizes = [r.size for r in rows]
+        self.known = [r.duration or 0.0 for r in rows]
+        self.bytes_done = self.seconds_done = 0.0  # for the bit rate
+        self.media_after_first = 0.0
+        self.first_done: float | None = None
+
+    def skip(self, i: int) -> None:
+        self.known[i] = 0.0
+        self.sizes[i] = 0
+        if self.first_done is None:
+            self.first_done = time.time()
+
+    def done(self, i: int, duration: float) -> None:
+        self.known[i] = duration
+        if duration:
+            self.bytes_done += self.sizes[i]
+            self.seconds_done += duration
+        if self.first_done is None:
+            self.first_done = time.time()
+        else:
+            self.media_after_first += duration
+
+    def text(self, i: int) -> str:
+        if i + 1 >= len(self.sizes) or self.first_done is None or self.media_after_first <= 0:
+            return ""
+        rate = self.media_after_first / max(time.time() - self.first_done, 1e-6)  # footage s per s
+        bitrate = self.bytes_done / self.seconds_done if self.seconds_done else 0.0
+        left = sum(d or (s / bitrate if bitrate else 0.0)
+                   for d, s in zip(self.known[i + 1:], self.sizes[i + 1:], strict=True))
+        return f"  ETA {short(left / rate)}" if rate > 0 else ""
 
 
 class _Lock:
@@ -357,16 +449,56 @@ class Indexer:
             return report
         self.log(f"Indexing {len(todo)} file(s). Stages: {', '.join(st for st in STAGES if st in wanted)}.")
 
-        pool = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
-        future = pool.submit(self._prepare, todo[0], wanted)
+        # One pass per model: all files get SigLIP, then Whisper, then Qwen. Only one model is in
+        # memory at a time, so the peak is the largest model, not the sum of all three.
+        passes = [(name, [s for s in stages_ if s in wanted], model) for name, stages_, model in PASSES]
+        passes = [p for p in passes if p[1]]
+        failed: set[int] = set()
+        durations: dict[int, float] = {}
+        for k, (name, pass_stages, model) in enumerate(passes, start=1):
+            rows = [r for r in (self.store.file_by_id(t.id) for t in todo if t.id not in failed)
+                    if r is not None and any(not r.done(st) for st in pass_stages)]
+            if not rows:
+                continue
+            self.log(f"Pass {k}/{len(passes)}: {name} ({', '.join(pass_stages)}) for {len(rows)} file(s).")
+            try:
+                self._run_pass(name, set(pass_stages), rows, failed, durations)
+            finally:
+                self.models.release(model)
+
+        report.failed = len(failed)
+        done = {fid: d for fid, d in durations.items() if fid not in failed}
+        report.processed = len(done)
+        report.media_seconds = sum(done.values())
+        report.seconds = time.time() - started
+        from .hardware import memory_report
+
+        speed = f" ({report.media_seconds / report.seconds:.1f}x realtime)" if report.seconds and done else ""
+        self.log(f"Done: {report.processed} file(s), {report.failed} failed, "
+                 f"{short(report.media_seconds)} of footage in {short(report.seconds)}{speed}. "
+                 f"Memory: {memory_report()}.")
+        return report
+
+    def _run_pass(self, name: str, stages: set[str], rows: list[FileRow], failed: set[int],
+                  durations: dict[int, float]) -> None:
+        """Run some stages for many files. A worker thread prepares the next file (ffmpeg only)."""
+        uses_media = bool(stages & {"frames", "visual", "speech"})
+        pool = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch") if uses_media else None
+
+        def prepare(row: FileRow):
+            return pool.submit(self._prepare, row, stages) if pool else None
+
+        eta = _Eta(rows)
+        future = prepare(rows[0])
         try:
-            for i, row in enumerate(todo):
-                prepared = future.result()
-                if i + 1 < len(todo):
-                    future = pool.submit(self._prepare, todo[i + 1], wanted)
+            for i, row in enumerate(rows):
+                prepared = future.result() if future is not None else Prepared(row=row)
+                if pool is not None and i + 1 < len(rows):
+                    future = prepare(rows[i + 1])
                 t0 = time.time()
+                label = f"[{name} {i + 1}/{len(rows)}]"
                 try:
-                    summary = self._process(prepared, wanted)
+                    summary = self._process(prepared, stages)
                 except KeyboardInterrupt:
                     raise
                 except Exception as exc:  # noqa: BLE001 - one bad file must not stop the run
@@ -375,8 +507,9 @@ class Indexer:
                     self.store.update_file(row.id, error=message)
                     self.store.bump_revision()
                     self.store.commit()
-                    report.failed += 1
-                    self.log(f"[{i + 1}/{len(todo)}] {row.relpath}  FAILED  {message}")
+                    failed.add(row.id)
+                    eta.skip(i)
+                    self.log(f"{label} {row.relpath}  FAILED  {message}")
                     continue
                 finally:
                     if prepared.tmp_dir is not None:
@@ -386,26 +519,24 @@ class Indexer:
                 elapsed = time.time() - t0 + prepared.seconds
                 fresh = self.store.file_by_id(row.id)
                 duration = (fresh.duration if fresh else None) or 0.0
-                report.processed += 1
-                report.media_seconds += duration
+                durations[row.id] = duration
+                eta.done(i, duration)
                 speed = f"  {duration / elapsed:.1f}x realtime" if elapsed > 0 and duration else ""
-                self.log(f"[{i + 1}/{len(todo)}] {row.relpath} ({short(duration)})  {summary}  "
-                         f"{elapsed:.1f}s{speed}")
+                left = eta.text(i)
+                self.log(f"{label} {row.relpath} ({short(duration)})  {summary}  {elapsed:.1f}s{speed}{left}")
+                if self.cfg.pause_seconds > 0 and i + 1 < len(rows):
+                    _pause(self.cfg.pause_seconds)  # less heat on fanless Macs; Ctrl-C still works
         except KeyboardInterrupt:
             media.STOP.set()  # the prefetch thread starts no new ffmpeg process
             self.store.rollback()
-            future.cancel()
-            pool.shutdown(wait=False, cancel_futures=True)
+            if future is not None:
+                future.cancel()
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
             self.log("Stopped. Finished files are saved. Run the same command again to continue.")
             raise
-        pool.shutdown(wait=True)
-        report.seconds = time.time() - started
-        from .hardware import memory_report
-
-        self.log(f"Done: {report.processed} file(s), {report.failed} failed, "
-                 f"{short(report.media_seconds)} of footage in {short(report.seconds)}. "
-                 f"Memory: {memory_report()}.")
-        return report
+        if pool is not None:
+            pool.shutdown(wait=True)
 
     def _prepare(self, row: FileRow, wanted: set[str]) -> Prepared:
         """Runs in a worker thread: probe, sample frames, decode audio. No database writes."""
@@ -443,11 +574,12 @@ class Indexer:
         if p.error is not None:
             raise p.error
         row, info = p.row, p.info
-        assert info is not None
         notes: list[str] = []
-        self.store.update_file(row.id, duration=info.duration, width=info.width, height=info.height,
-                               fps=info.fps, vcodec=info.vcodec, has_audio=int(info.has_audio), error=None)
-        self._commit()
+        if info is not None:
+            self.store.update_file(row.id, duration=info.duration, width=info.width, height=info.height,
+                                   fps=info.fps, vcodec=info.vcodec, has_audio=int(info.has_audio), error=None)
+            self._commit()
+        duration = info.duration if info is not None else (row.duration or 0.0)
 
         # frames
         if "frames" in wanted and not row.frames_done:
@@ -464,7 +596,7 @@ class Indexer:
             self.store.add_frames(row.id, items)
             self.store.update_file(row.id, frames_done=1)
             self._commit()
-            notes.append(f"{len(items)} frames")
+            notes.append(_count(len(items), "frame"))
 
         # visual (SigLIP per frame)
         if "visual" in wanted and not row.visual_done:
@@ -481,7 +613,7 @@ class Indexer:
         # speech (VAD + Whisper)
         if "speech" in wanted and not row.speech_done:
             if p.audio is not None and p.audio.size:
-                tr = self.models.transcribe(p.audio, info.duration, row.relpath)
+                tr = self.models.transcribe(p.audio, duration, row.relpath)
             else:
                 tr = speech.Transcript(language=None, speech_seconds=0.0, segments=[])
                 if p.audio_error:
@@ -503,6 +635,7 @@ class Indexer:
                 self.store.set_chunk_embeddings([(c["id"], v) for c, v in zip(chunks, vecs, strict=True)])
             self.store.update_file(row.id, speech_emb_done=1)
             self._commit()
+            notes.append(_count(len(chunks), "transcript chunk"))
 
         # scenes (Qwen video embeddings over short frame sequences)
         if "scenes" in wanted and not row.scenes_done:
@@ -513,7 +646,7 @@ class Indexer:
                 embs = np.stack([np.frombuffer(r["emb"], dtype=np.float16).astype(np.float32)
                                  for r in frame_rows])
                 times = [float(r["t"]) for r in frame_rows]
-                found = scenes.segment(times, embs, info.duration, self.cfg.scene_max_seconds,
+                found = scenes.segment(times, embs, duration, self.cfg.scene_max_seconds,
                                        self.cfg.scene_cut_similarity, self.cfg.scene_step_similarity)
                 qwen = self.models.qwen()
                 sequences = [[str(self.index_dir / frame_rows[k]["image"]) for k in sc.frames] for sc in found]
@@ -523,5 +656,5 @@ class Indexer:
                 count = len(found)
             self.store.update_file(row.id, scenes_done=1)
             self._commit()
-            notes.append(f"{count} scenes")
+            notes.append(_count(count, "scene"))
         return " · ".join(notes) if notes else "up to date"

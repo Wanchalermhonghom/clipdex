@@ -51,8 +51,13 @@ def cmd_index(args) -> int:
         "asr_backend": "none" if args.no_speech else None,
         "language": args.language,
         "device": args.device,
+        "pause_seconds": args.pause,
     }
     cfg = _config(args, **overrides)
+    if args.throttle:
+        cfg = cfg.throttled()
+        print(f"Throttle: batches of {cfg.siglip_batch} (SigLIP) and {cfg.qwen_batch} (Qwen), "
+              f"{cfg.pause_seconds:g} s pause after each file.", file=sys.stderr)
     stages = [s.strip() for s in args.stages.split(",")] if args.stages else None
     try:
         indexer = Indexer(Path(args.root).expanduser(), cfg, _index_dir(args))
@@ -248,6 +253,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-speech", action="store_true", help="skip transcription")
     sp.add_argument("--language", help="force a speech language, e.g. de or en (default: detect per file)")
     sp.add_argument("--device", choices=["auto", "mps", "cuda", "cpu"])
+    sp.add_argument("--pause", type=float, help="pause this many seconds after each file")
+    sp.add_argument("--throttle", action="store_true",
+                    help="less load for laptops: smaller batches and a 5 s pause after each file")
     sp.set_defaults(func=cmd_index)
 
     sp = sub.add_parser("search", help="search the index")

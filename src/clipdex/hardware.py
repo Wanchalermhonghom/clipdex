@@ -40,41 +40,43 @@ class Profile:
     notes: list[str] = field(default_factory=list)
 
 
-# Memory numbers are estimates: model weights (fp16/bf16) plus about 30 % for activations.
-# Weights: SigLIP 2 base 0.75 GB, so400m 2.3 GB, Qwen3-VL-Embedding 2B 4.3 GB, 8B 16.3 GB,
-# Whisper large-v3-turbo 1.6 GB. Measure your own peak with 'clipdex index --limit 3'.
+# Memory numbers are estimates. The indexer loads one model at a time, so its peak is the largest
+# model's weights (fp16/bf16) plus about 30 % for activations and about 1 GB for the rest. The MCP
+# server keeps SigLIP and Qwen loaded together. Weights: SigLIP 2 base 0.75 GB, so400m 2.3 GB,
+# Qwen3-VL-Embedding 2B 4.3 GB, 8B 16.3 GB, Whisper large-v3-turbo 1.6 GB.
+# Measure your own peak with 'clipdex index --limit 3'.
 PROFILES: dict[str, Profile] = {
     "apple-small": Profile(
         "apple-small", "Apple Silicon with less than 16 GB memory",
         {"siglip_model": "google/siglip2-base-patch16-256", "siglip_batch": 16, "qwen_enabled": False},
-        ram_index_gb=3.5, ram_mcp_gb=1.5,
+        ram_index_gb=3.0, ram_mcp_gb=1.5,
         notes=["No scene (action) search and no semantic speech search. Exact speech and visual search work."]),
     "apple-medium": Profile(
         "apple-medium", "Apple Silicon with 16-47 GB memory",
         {"siglip_model": "google/siglip2-so400m-patch14-384", "qwen_enabled": True,
          "qwen_model": "Qwen/Qwen3-VL-Embedding-2B", "qwen_batch": 4},
-        ram_index_gb=10.0, ram_mcp_gb=8.0,
+        ram_index_gb=7.0, ram_mcp_gb=8.0,
         notes=["While the indexer runs on a 16-24 GB Mac, start the MCP server with --no-qwen or close other apps."]),
     "apple-large": Profile(
         "apple-large", "Apple Silicon with 48 GB memory or more",
         {"siglip_model": "google/siglip2-so400m-patch14-384", "qwen_enabled": True,
          "qwen_model": "Qwen/Qwen3-VL-Embedding-8B", "qwen_batch": 4},
-        ram_index_gb=24.0, ram_mcp_gb=21.0,
+        ram_index_gb=22.0, ram_mcp_gb=21.0,
         notes=["The search thresholds were calibrated with the 2B model. Check them with --explain."]),
     "nvidia-small": Profile(
         "nvidia-small", "NVIDIA GPU with less than 10 GB VRAM",
         {"siglip_model": "google/siglip2-so400m-patch14-384", "qwen_enabled": False},
-        ram_index_gb=4.5, ram_mcp_gb=3.0),
+        ram_index_gb=4.0, ram_mcp_gb=3.0),
     "nvidia-medium": Profile(
         "nvidia-medium", "NVIDIA GPU with 10-23 GB VRAM",
         {"siglip_model": "google/siglip2-so400m-patch14-384", "qwen_enabled": True,
          "qwen_model": "Qwen/Qwen3-VL-Embedding-2B", "qwen_batch": 8},
-        ram_index_gb=10.0, ram_mcp_gb=8.0),
+        ram_index_gb=7.0, ram_mcp_gb=8.0),
     "nvidia-large": Profile(
         "nvidia-large", "NVIDIA GPU with 24 GB VRAM or more",
         {"siglip_model": "google/siglip2-so400m-patch14-384", "qwen_enabled": True,
          "qwen_model": "Qwen/Qwen3-VL-Embedding-8B", "qwen_batch": 8},
-        ram_index_gb=24.0, ram_mcp_gb=21.0,
+        ram_index_gb=22.0, ram_mcp_gb=21.0,
         notes=["The search thresholds were calibrated with the 2B model. Check them with --explain."]),
     "cpu": Profile(
         "cpu", "No supported GPU: small and slow, but it works",

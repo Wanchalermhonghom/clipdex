@@ -156,6 +156,16 @@ class MLXWhisper:
                 compression_ratio=float(s.get("compression_ratio", 1.0))))
         return result.get("language"), segments
 
+    def close(self) -> None:
+        """Drop mlx-whisper's cached model, so its memory can be freed."""
+        try:
+            from mlx_whisper.transcribe import ModelHolder
+
+            ModelHolder.model = None
+            ModelHolder.model_path = None
+        except Exception:  # noqa: BLE001 - nothing to free
+            pass
+
     def detect_language(self, audio: np.ndarray) -> dict[str, float]:
         """Language probabilities for the first 30 s: one encoder pass, no transcription."""
         import mlx.core as mx

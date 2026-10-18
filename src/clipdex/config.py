@@ -50,6 +50,9 @@ class Config:
     min_speech_seconds: float = 1.0  # less detected speech than this = no transcription
     speech_chunk_seconds: float = 20.0  # length of transcript chunks for semantic speech search
 
+    # --- load -----------------------------------------------------------------
+    pause_seconds: float = 0.0  # pause after each file, e.g. to keep a fanless Mac cooler
+
     # --- models -------------------------------------------------------------
     device: str = "auto"  # auto | mps | cuda | cpu
     siglip_model: str = "google/siglip2-so400m-patch14-384"
@@ -118,6 +121,11 @@ class Config:
             raise ValueError(f"{source}: moment_max_seconds ({updated.moment_max_seconds:g}) must be at least "
                              f"scene_max_seconds and speech_chunk_seconds ({longest:g}), or hits cannot merge")
         return updated
+
+    def throttled(self) -> Config:
+        """Less load for laptops: small batches and a pause after each file (index --throttle)."""
+        return self.apply({"pause_seconds": max(self.pause_seconds, 5.0),
+                           "siglip_batch": min(self.siglip_batch, 8), "qwen_batch": 1}, source="--throttle")
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

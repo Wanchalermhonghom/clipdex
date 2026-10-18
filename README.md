@@ -46,6 +46,10 @@ For every file, clipdex does these steps:
 6. clipdex splits each file into short scenes (10 s or less). A new scene starts when the picture changes a lot.
 7. Qwen3-VL-Embedding makes one vector per scene and per transcript part (20 s).
 
+clipdex runs the models one after the other: first SigLIP for all files, then Whisper, then Qwen.
+Only one model is in memory at a time. Each line shows the time left in the current pass (ETA).
+On a fanless MacBook Air, `clipdex index ... --throttle` uses smaller batches and pauses 5 s after each file.
+
 Everything goes into one SQLite file and a folder of small JPEG frames: about 55 MB per hour of footage.
 
 ## Fit clipdex to your machine
@@ -54,9 +58,9 @@ Everything goes into one SQLite file and a folder of small JPEG frames: about 55
 
 | Profile | Machine | Models | Peak memory (estimate) |
 |---|---|---|---|
-| `apple-small` | Apple Silicon, < 16 GB | SigLIP 2 base, no Qwen | indexer ~4 GB |
-| `apple-medium` | Apple Silicon, 16–47 GB | SigLIP 2 so400m, Qwen 2B | indexer ~10 GB, MCP ~8 GB |
-| `apple-large` | Apple Silicon, ≥ 48 GB | SigLIP 2 so400m, Qwen 8B | indexer ~24 GB, MCP ~21 GB |
+| `apple-small` | Apple Silicon, < 16 GB | SigLIP 2 base, no Qwen | indexer ~3 GB |
+| `apple-medium` | Apple Silicon, 16–47 GB | SigLIP 2 so400m, Qwen 2B | indexer ~7 GB, MCP ~8 GB |
+| `apple-large` | Apple Silicon, ≥ 48 GB | SigLIP 2 so400m, Qwen 8B | indexer ~22 GB, MCP ~21 GB |
 | `nvidia-small/medium/large` | NVIDIA GPU by VRAM | as above | as above |
 | `cpu` | no GPU | SigLIP 2 base, Whisper small, no Qwen | indexer ~3 GB |
 
