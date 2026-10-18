@@ -19,7 +19,7 @@ Jeder Treffer ist ein **Moment**: eine Datei plus Start und Ende in Sekunden.
 
 Suchanfragen gehen auf Deutsch, Englisch und in den anderen Sprachen der Modelle.
 
-## Schnellstart (Mac mit Apple Silicon)
+## Schnellstart (Mac mit Apple Silicon, macOS 14 oder neuer)
 
 ```bash
 brew install ffmpeg uv

@@ -19,7 +19,7 @@ Every result is a **moment**: a file plus a start and end time in seconds.
 
 Queries work in English, German and the other languages that the models know.
 
-## Quick start (macOS with Apple Silicon)
+## Quick start (Apple Silicon Mac, macOS 14 or newer)
 
 ```bash
 brew install ffmpeg uv
