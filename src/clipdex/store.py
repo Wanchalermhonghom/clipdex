@@ -293,7 +293,11 @@ class Store:
             cur = self.conn.execute(
                 "INSERT INTO files(relpath, size, mtime, fingerprint, updated_at) VALUES(?,?,?,?,?)",
                 (relpath, size, mtime, fingerprint, time.time()))
-            return int(cur.lastrowid)
+            file_id = int(cur.lastrowid)
+            # SQLite can reuse the id of a deleted file: tell the search cache that this id changed.
+            for table in _REV_COLUMNS:
+                self._touch(table, file_id)
+            return file_id
 
     def update_file(self, file_id: int, **values) -> None:
         if not values:

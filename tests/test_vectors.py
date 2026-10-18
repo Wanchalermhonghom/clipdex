@@ -133,3 +133,20 @@ def test_empty_tables_open(tmp_path, kind):
     cache = vectors.VectorCache(tmp_path, store)
     cache.sync()
     assert len(cache.tables[kind]) == 0
+
+
+def test_reused_file_id_does_not_keep_old_vectors(library, cfg):
+    idx = _index(library, cfg)
+    idx.run()
+    top = max(idx.store.files(), key=lambda r: r.id)
+    (library / top.relpath).unlink()
+    idx.sync(prune=True)  # a run that stopped after its sync: the cache still has the old rows
+    (library / "Z").mkdir()
+    (library / "Z" / "broken.mp4").write_bytes(b"\x00not a video" * 1000)
+    idx.run()
+    new = idx.store.file_by_path("Z/broken.mp4")
+    assert new.id == top.id and new.error  # SQLite reused the id; the new file cannot be read
+    for kind in vectors.KINDS:
+        assert _live(idx, kind) == _in_db(idx, kind)
+    engine = _engine(idx, cfg)
+    assert "Z/broken.mp4" not in {r["file"] for r in engine.search("yellow", mode="visual")["results"]}
