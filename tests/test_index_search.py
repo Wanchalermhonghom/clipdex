@@ -426,3 +426,10 @@ def test_redo_runs_a_stage_again(library, cfg):
     assert report.processed == 1 and idx.models.qwen().calls == calls + 1
     assert idx.store.file_by_path("A/red_blue.mp4").scenes_done == 1
     assert idx.store.file_by_path("B/green.mov").scenes_done == 1
+
+
+def test_best_time_prefers_the_spoken_word(engine):
+    # speech and speech_sem both rank 1 with weight 1.0: the word time (8.4 s) wins over the chunk start (1.0 s)
+    out = engine.search("Claude Code Laptop", mode="speech")
+    top = out["results"][0]
+    assert top["matched"] == ["speech", "speech_sem"] and top["best"] == pytest.approx(8.4)

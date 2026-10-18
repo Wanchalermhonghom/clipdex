@@ -30,6 +30,9 @@ from .library import norm
 from .store import Store
 from .timefmt import tc
 
+# How exact the time of a hit is: a spoken word, a frame, a scene, a 20 s transcript chunk.
+_PRECISION = {"speech": 3, "visual": 2, "scenes": 1, "speech_sem": 0}
+
 MODES = {
     "auto": {"visual": 1.0, "scenes": 1.0, "speech": 1.0, "speech_sem": 0.8},
     "visual": {"visual": 1.0, "scenes": 0.7},
@@ -308,7 +311,9 @@ class SearchEngine:
                 if h.channel not in best_rank or h.rank < best_rank[h.channel].rank:
                     best_rank[h.channel] = h
             m.score = sum(weights[c] / (k + h.rank) for c, h in best_rank.items())
-            top = max(best_rank.values(), key=lambda h: weights[h.channel] / (k + h.rank))
+            # On equal weight, prefer the channel with the most exact time: a spoken word beats a frame,
+            # a frame beats a scene, a scene beats a 20 s transcript chunk.
+            top = max(best_rank.values(), key=lambda h: (weights[h.channel] / (k + h.rank), _PRECISION[h.channel]))
             m.best = top.peak
             # Span only the hits that are nearly as strong as the best hit of their channel,
             # so a weak neighbouring scene does not stretch the moment.
@@ -404,7 +409,8 @@ class SearchEngine:
             "best_tc": tc(m.best),
             "file_duration": round(f.duration or 0.0, 2),
             # strongest contribution to the fused score first
-            "matched": sorted(chans, key=lambda c: -weights[c] / (self.cfg.rrf_k + chans[c]["rank"])),
+            "matched": sorted(chans, key=lambda c: (-weights[c] / (self.cfg.rrf_k + chans[c]["rank"]),
+                                                    -_PRECISION[c])),
             "channels": chans,
             "frame_id": frame_id,
             "transcript": self._transcript_excerpt(m.file_id, m.start, m.end),
