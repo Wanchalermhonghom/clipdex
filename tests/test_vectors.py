@@ -24,10 +24,11 @@ def _manifest(idx) -> dict:
 
 def _live(idx, kind: str) -> set[tuple[int, int]]:
     """(row id, file id) of the live rows in the cache files."""
-    info = _manifest(idx)["tables"][kind]
+    man = _manifest(idx)
+    info = man["tables"][kind]
     if not info["rows"]:
         return set()
-    rows = np.memmap(idx.index_dir / "vectors" / f"{kind}.rows", dtype=vectors.ROW, mode="r",
+    rows = np.memmap(idx.index_dir / "vectors" / f"{kind}.{man['generation']}.rows", dtype=vectors.ROW, mode="r",
                      shape=(info["rows"],))
     return {(int(r["id"]), int(r["file"])) for r in rows if r["file"] >= 0}
 
@@ -88,14 +89,15 @@ def test_cache_drops_an_append_that_stopped_halfway(library, cfg):
     idx = _index(library, cfg)
     idx.run()
     folder = idx.index_dir / "vectors"
-    for name in ("frames.rows", "frames.f16"):
+    gen = _manifest(idx)["generation"]
+    for name in (f"frames.{gen}.rows", f"frames.{gen}.f16"):
         with open(folder / name, "ab") as fh:
             fh.write(b"\x01" * 100)  # bytes after the manifest's row count
     make_color_video(library / "D" / "more_green.mp4", [("green", 4)], audio=False)
     idx.run()
     assert _live(idx, "frames") == _in_db(idx, "frames")
     rows = _manifest(idx)["tables"]["frames"]["rows"]
-    assert (folder / "frames.rows").stat().st_size == rows * vectors.ROW.itemsize
+    assert (folder / f"frames.{gen}.rows").stat().st_size == rows * vectors.ROW.itemsize
 
 
 def test_read_only_index_folder_keeps_vectors_in_memory(library, cfg, monkeypatch):
@@ -150,3 +152,57 @@ def test_reused_file_id_does_not_keep_old_vectors(library, cfg):
         assert _live(idx, kind) == _in_db(idx, kind)
     engine = _engine(idx, cfg)
     assert "Z/broken.mp4" not in {r["file"] for r in engine.search("yellow", mode="visual")["results"]}
+
+
+def test_rebuild_switches_files_with_the_manifest(library, cfg):
+    idx = _index(library, cfg)
+    idx.run()
+    folder = idx.index_dir / "vectors"
+    (folder / "frames.rows").write_bytes(b"old format")  # files of the first cache format
+    (folder / "frames.0123abcd.f16").write_bytes(b"from a rebuild that stopped")
+    gen = _manifest(idx)["generation"]
+    cfg2 = cfg.apply({"siglip_model": "another/siglip"})
+    Indexer(library, cfg2, models=FakeModels(cfg2, TRANSCRIPTS), log=lambda m: None).run(reembed=["visual"])
+    man = _manifest(idx)
+    assert man["generation"] != gen
+    names = sorted(p.name for p in folder.iterdir() if not p.name.startswith(("manifest", ".lock")))
+    assert names == sorted(f"{k}.{man['generation']}.{ext}" for k in vectors.KINDS for ext in ("rows", "f16"))
+
+
+def test_write_error_keeps_vectors_in_memory(library, cfg, monkeypatch):
+    idx = _index(library, cfg)
+    idx.run()
+    (idx.index_dir / "vectors" / "manifest.json").unlink()  # force a rebuild in the search process
+    calls = []
+
+    def full_disk(self, man, db):
+        calls.append(self.in_memory)
+        if not self.in_memory:
+            raise OSError(28, "No space left on device")
+        return real(self, man, db)
+
+    real = vectors.VectorCache._rebuild
+    monkeypatch.setattr(vectors.VectorCache, "_rebuild", full_disk)
+    engine = _engine(idx, cfg)
+    assert engine.search("green", mode="visual")["results"]
+    assert calls == [False, True] and engine.cache.in_memory
+
+
+def test_windows_keeps_vectors_in_memory(tmp_path, monkeypatch):
+    from clipdex.store import Store
+
+    monkeypatch.setattr(vectors.sys, "platform", "win32")
+    assert vectors.VectorCache(tmp_path, Store(tmp_path / "index.db")).in_memory
+
+
+def test_rows_of_unknown_files_are_skipped(library, cfg, monkeypatch):
+    idx = _index(library, cfg)
+    idx.run()
+    engine = _engine(idx, cfg)
+    engine.search("green", mode="visual")
+    rows = np.array(engine.frames.rows)  # a copy we may change
+    rows["file"][:] = 999  # as if another process marked every row dead after the mask was built
+    engine.frames = vectors.VectorTable(rows, engine.frames.emb)
+    monkeypatch.setattr(engine, "_file_mask", lambda table, allowed: np.ones(len(table), dtype=bool))
+    results = engine.search("green", mode="visual")["results"]  # no KeyError for the unknown file
+    assert all("visual" not in r["matched"] for r in results)

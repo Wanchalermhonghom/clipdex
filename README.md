@@ -30,7 +30,7 @@ clipdex index /Volumes/MySSD             # index everything (stop with Ctrl-C, r
 clipdex search "someone pours coffee" /Volumes/MySSD --mode action
 ```
 
-Linux with an NVIDIA GPU or only a CPU should also work: install ffmpeg and [uv](https://docs.astral.sh/uv/) first. The tests run on Linux and macOS. Windows is not tested yet.
+Linux with an NVIDIA GPU or only a CPU should also work: install ffmpeg and [uv](https://docs.astral.sh/uv/) first. The tests run on Linux and macOS. Windows is not tested yet; there the search keeps all vectors in memory.
 
 ## How the index is built
 

@@ -14,6 +14,7 @@ moments: a file plus a time range.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import threading
@@ -31,6 +32,8 @@ from .library import norm, volume_name
 from .store import Store
 from .timefmt import tc
 from .vectors import VectorCache, VectorTable
+
+log = logging.getLogger(__name__)
 
 # How exact the time of a hit is: a spoken word, a frame, a scene, a 20 s transcript chunk.
 _PRECISION = {"speech": 3, "visual": 2, "scenes": 1, "speech_sem": 0}
@@ -144,7 +147,12 @@ class SearchEngine:
         self._languages = sorted(counts, key=lambda lang: -counts[lang])  # for word stems in queries
         self._fts_tables = {t for t in ("segments_stem", "segments_tri") if self.store._table_exists(t)}
         # Vectors stay in memory-mapped files; only the changed files are read again.
-        self.cache.sync()
+        try:
+            self.cache.sync()
+        except OSError as exc:  # e.g. a full disk: keep the vectors in RAM instead
+            log.warning("The search cache could not be written (%s). Vectors stay in memory.", exc)
+            self.cache.use_memory()
+            self.cache.sync()
         tables = self.cache.tables
         self.frames, self.scene_table, self.chunks = tables["frames"], tables["scenes"], tables["chunks"]
         self._revision = rev
@@ -211,6 +219,8 @@ class SearchEngine:
         hits = []
         for k in order:
             t = float(self.frames.a[k])
+            if int(self.frames.file_ids[k]) not in self.files:  # marked dead by another process meanwhile
+                continue
             hits.append(Hit("visual", int(self.frames.file_ids[k]), t, t + span, t,
                             enc.prob(float(logit[k])), float(logit[k]), ref=int(self.frames.ids[k])))
         return hits
@@ -244,6 +254,8 @@ class SearchEngine:
         hits = []
         for k in order:
             s, e = float(self.scene_table.a[k]), float(self.scene_table.b[k])
+            if int(self.scene_table.file_ids[k]) not in self.files:
+                continue
             hits.append(Hit("scenes", int(self.scene_table.file_ids[k]), s, e, (s + e) / 2, float(cos[k]),
                             float(cos[k]), ref=int(self.scene_table.ids[k])))
         return hits
@@ -259,6 +271,8 @@ class SearchEngine:
         hits = []
         for k in order:
             s, e = float(self.chunks.a[k]), float(self.chunks.b[k])
+            if int(self.chunks.file_ids[k]) not in self.files:
+                continue
             cid = int(self.chunks.ids[k])
             hits.append(Hit("speech_sem", int(self.chunks.file_ids[k]), s, e, s, float(cos[k]),
                             float(cos[k]), ref=cid, text=texts.get(cid, "")))
@@ -496,8 +510,8 @@ class SearchEngine:
                 if not np.isfinite(cos[i]) or len(results) >= limit:
                     break
                 fid, t = int(self.frames.file_ids[i]), float(self.frames.a[i])
-                if any(abs(t - u) < 10.0 for u in used[fid]):
-                    continue  # one result per 10 s window
+                if fid not in self.files or any(abs(t - u) < 10.0 for u in used[fid]):
+                    continue  # unknown file (a dead row), or one result per 10 s window
                 used[fid].append(t)
                 f = self.files[fid]
                 results.append({"rank": len(results) + 1, "file": f.relpath, **self.location(f.relpath),

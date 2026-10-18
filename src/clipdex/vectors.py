@@ -15,7 +15,11 @@ that change (files.frames_rev, scenes_rev, chunks_rev). On sync the cache marks 
 or deleted files as dead (file id -1) and appends their current rows. It rebuilds from scratch after
 a model change, for an index without the stamps, and when more than a quarter of the rows are dead.
 
-When the index folder is read-only, the same data is kept in RAM instead.
+When the index folder is read-only, on Windows (a mapped file cannot be replaced there), or when
+writing fails (a full disk), the same data is kept in RAM instead.
+
+A rebuild writes new files whose names carry a new generation (frames.<gen>.f16) and then replaces
+the manifest in one step. Files of other generations are deleted after that, under the lock.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from dataclasses import dataclass
@@ -34,7 +39,7 @@ from .store import Store
 
 log = logging.getLogger(__name__)
 
-FORMAT = 1
+FORMAT = 2  # 2: file names carry the generation, so a rebuild switches atomically with the manifest
 ROW = np.dtype([("id", "<i8"), ("file", "<i8"), ("a", "<f8"), ("b", "<f8")])
 
 # kind: (table, revision column in files, time columns)
@@ -110,7 +115,7 @@ class VectorCache:
         self.dir = index_dir / "vectors"
         self.store = store
         self.tables: dict[str, VectorTable] = {k: _empty() for k in KINDS}
-        self.in_memory = not self._writable()
+        self.in_memory = sys.platform == "win32" or not self._writable()
         self._mem_manifest: dict = {}
         self._opened: tuple | None = None
         self.last_sync: str = ""  # "none", "update" or "rebuild", for logs and tests
@@ -124,7 +129,14 @@ class VectorCache:
                 return
             with _FileLock(self.dir / ".lock"):
                 self._sync_in_snapshot()
-        self._open()
+                self._cleanup()
+                self._open()  # under the lock: no other process deletes these files meanwhile
+
+    def use_memory(self) -> None:
+        """Keep the vectors in RAM from now on (for example after a write error)."""
+        self.in_memory = True
+        self._mem_manifest = {}
+        self._opened = None
 
     # --- helpers -----------------------------------------------------------------------------
     def _writable(self) -> bool:
@@ -195,8 +207,17 @@ class VectorCache:
         self._rebuild(man, db)
         self.last_sync = "rebuild"
 
-    def _path(self, kind: str, ext: str, tmp: bool = False) -> Path:
-        return self.dir / f"{kind}.{ext}{'.tmp' if tmp else ''}"
+    def _path(self, kind: str, ext: str, generation: str) -> Path:
+        return self.dir / f"{kind}.{generation}.{ext}"
+
+    def _cleanup(self) -> None:
+        """Delete cache files that the manifest does not use (older generations, stopped rebuilds)."""
+        gen = self._manifest().get("generation")
+        keep = {self._path(k, ext, gen).name for k in KINDS for ext in ("rows", "f16")} if gen else set()
+        pattern = re.compile(r"^(frames|scenes|chunks)\.([0-9a-f]+\.)?(rows|f16)(\.tmp)?$")
+        for p in self.dir.iterdir():
+            if pattern.match(p.name) and p.name not in keep:
+                p.unlink(missing_ok=True)
 
     @staticmethod
     def _select(table: str, ca: str, cb: str, where: str = "") -> str:
@@ -225,52 +246,48 @@ class VectorCache:
         return rows, emb
 
     def _rebuild(self, man: dict, db: dict) -> None:
-        """Write all vectors from the database into new files, then swap them in."""
+        """Write all vectors from the database into files of a new generation, then switch the manifest.
+
+        Plain file writes (not a writable memory map): a full disk raises OSError instead of a crash.
+        """
         c = self.store.conn
+        gen = uuid.uuid4().hex[:16]
         tables: dict[str, dict] = {}
         built: dict[str, VectorTable] = {}
         for kind, (table, _, (ca, cb)) in KINDS.items():
             first = c.execute(f"SELECT emb FROM {table} WHERE emb IS NOT NULL LIMIT 1").fetchone()
             dim = len(first[0]) // 2 if first else 0
-            n = c.execute(f"SELECT COUNT(*) FROM {table} WHERE emb IS NOT NULL").fetchone()[0] if first else 0
-            if self.in_memory:
-                rows, emb = np.empty(n, ROW), np.empty((n, dim), np.float16)
-            else:
-                rows = self._create(self._path(kind, "rows", tmp=True), ROW, (n,))
-                emb = self._create(self._path(kind, "f16", tmp=True), np.float16, (n, dim))
-            k = 0
-            for batch in self._stream(self._select(table, ca, cb)):
-                r, e = self._decode(batch, dim)
-                m = min(len(r), n - k)  # rows added after COUNT cannot appear inside the snapshot
-                rows[k:k + m], emb[k:k + m] = r[:m], e[:m]
-                k += m
+            rows_parts, emb_parts, k = [], [], 0
+            fr = fe = None
+            if not self.in_memory:
+                fr = open(self._path(kind, "rows", gen), "wb")
+                fe = open(self._path(kind, "f16", gen), "wb")
+            try:
+                for batch in self._stream(self._select(table, ca, cb)):
+                    r, e = self._decode(batch, dim)
+                    if self.in_memory:
+                        rows_parts.append(r)
+                        emb_parts.append(e)
+                    else:
+                        fr.write(r.tobytes())
+                        fe.write(e.tobytes())
+                    k += len(r)
+                if fr is not None:
+                    for fh in (fr, fe):
+                        fh.flush()
+                        os.fsync(fh.fileno())
+            finally:
+                for fh in (fr, fe):
+                    if fh is not None:
+                        fh.close()
             tables[kind] = {"rows": k, "dim": dim, "dead": 0}
             if self.in_memory:
-                built[kind] = VectorTable(rows[:k], emb[:k])
-            else:
-                for arr in (rows, emb):
-                    if isinstance(arr, np.memmap):
-                        arr.flush()
-                del rows, emb  # unmap before the files are renamed
+                built[kind] = VectorTable(np.concatenate(rows_parts) if rows_parts else np.zeros(0, ROW),
+                                          np.concatenate(emb_parts) if emb_parts else np.zeros((0, dim), np.float16))
         if self.in_memory:
             self.tables = built
-        else:
-            for kind in KINDS:
-                for ext in ("rows", "f16"):
-                    tmp = self._path(kind, ext, tmp=True)
-                    if tmp.exists():
-                        os.replace(tmp, self._path(kind, ext))
-                    else:
-                        self._path(kind, ext).unlink(missing_ok=True)
         self._write_manifest({"format": FORMAT, "index_id": db["index_id"], "models": db["models"],
-                              "revision": db["revision"], "generation": uuid.uuid4().hex, "tables": tables})
-
-    @staticmethod
-    def _create(path: Path, dtype, shape) -> np.ndarray:
-        if int(np.prod(shape)) == 0:
-            path.write_bytes(b"")
-            return np.zeros(shape, dtype)
-        return np.memmap(path, dtype=dtype, mode="w+", shape=shape)
+                              "revision": db["revision"], "generation": gen, "tables": tables})
 
     def _update(self, man: dict, db: dict) -> None:
         """Drop the rows of changed and deleted files, then append their current rows."""
@@ -309,9 +326,10 @@ class VectorCache:
                     self.tables[kind] = VectorTable(np.concatenate([rows_t, r]),
                                                     np.concatenate([emb_t.reshape(-1, info["dim"]), e]))
                 else:
-                    with open(self._path(kind, "rows"), "ab") as fh:
+                    gen = man["generation"]
+                    with open(self._path(kind, "rows", gen), "ab") as fh:
                         fh.write(r.tobytes())
-                    with open(self._path(kind, "f16"), "ab") as fh:
+                    with open(self._path(kind, "f16", gen), "ab") as fh:
                         fh.write(e.tobytes())
                 info["rows"] += len(r)
             del rows_t, emb_t
@@ -323,9 +341,9 @@ class VectorCache:
         if self.in_memory:
             t = self.tables[kind]
             return t.rows, t.emb
-        n, dim = info["rows"], info["dim"]
+        n, dim, gen = info["rows"], info["dim"], self._manifest()["generation"]
         for ext, size in (("rows", ROW.itemsize), ("f16", 2 * dim)):
-            path = self._path(kind, ext)
+            path = self._path(kind, ext, gen)
             want = n * size
             have = path.stat().st_size if path.exists() else -1
             if have < want:
@@ -334,7 +352,7 @@ class VectorCache:
                 os.truncate(path, want)
         if n == 0:
             return np.zeros(0, ROW), None
-        return np.memmap(self._path(kind, "rows"), dtype=ROW, mode="r+", shape=(n,)), None
+        return np.memmap(self._path(kind, "rows", gen), dtype=ROW, mode="r+", shape=(n,)), None
 
     def _open(self) -> None:
         """Map the files that the manifest describes (again, if they changed)."""
@@ -349,8 +367,9 @@ class VectorCache:
             if n == 0:
                 tables[kind] = _empty(dim)
                 continue
+            gen = man["generation"]
             tables[kind] = VectorTable(
-                np.memmap(self._path(kind, "rows"), dtype=ROW, mode="r", shape=(n,)),
-                np.memmap(self._path(kind, "f16"), dtype=np.float16, mode="r", shape=(n, dim)))
+                np.memmap(self._path(kind, "rows", gen), dtype=ROW, mode="r", shape=(n,)),
+                np.memmap(self._path(kind, "f16", gen), dtype=np.float16, mode="r", shape=(n, dim)))
         self.tables = tables
         self._opened = key
