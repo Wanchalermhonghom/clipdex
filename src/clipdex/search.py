@@ -152,7 +152,7 @@ class SearchEngine:
         self.frames = _load_table(
             self.store, "SELECT id, file_id, t, image, emb FROM frames WHERE emb IS NOT NULL "
                         "ORDER BY file_id, t", ["t", "image"])
-        self.scenes = _load_table(
+        self.scene_table = _load_table(
             self.store, "SELECT id, file_id, start, end, frame_ids, emb FROM scenes ORDER BY file_id, start",
             ["start", "end", "frame_ids"])
         self.chunks = _load_table(
@@ -236,16 +236,16 @@ class SearchEngine:
 
     def _scenes(self, query: str, allowed: set[int], diag: dict) -> list[Hit]:
         qwen = self._qwen_model()
-        if qwen is None or len(self.scenes) == 0:
+        if qwen is None or len(self.scene_table) == 0:
             return []
         q = qwen.embed_texts([query], instruction=self.cfg.qwen_visual_instruction)[0]
-        order, cos = self._cosine_channel("scenes", self.scenes, q, allowed, self.cfg.scene_floor,
+        order, cos = self._cosine_channel("scenes", self.scene_table, q, allowed, self.cfg.scene_floor,
                                           self.cfg.scene_margin, diag)
         hits = []
         for k in order:
-            s, e = float(self.scenes.cols["start"][k]), float(self.scenes.cols["end"][k])
-            hits.append(Hit("scenes", int(self.scenes.file_ids[k]), s, e, (s + e) / 2, float(cos[k]),
-                            float(cos[k]), ref=int(self.scenes.ids[k])))
+            s, e = float(self.scene_table.cols["start"][k]), float(self.scene_table.cols["end"][k])
+            hits.append(Hit("scenes", int(self.scene_table.file_ids[k]), s, e, (s + e) / 2, float(cos[k]),
+                            float(cos[k]), ref=int(self.scene_table.ids[k])))
         return hits
 
     def _speech_sem(self, query: str, allowed: set[int], diag: dict) -> list[Hit]:

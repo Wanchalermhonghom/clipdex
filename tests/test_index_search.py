@@ -244,6 +244,9 @@ def test_mcp_tools(engine):
             assert res.content[1].mime_type == "image/jpeg"
             res = await client.call_tool("get_transcript", {"file": "red_blue.mp4"})
             assert "Kaffee" in res.content[0].text
+            # get_scenes after a search: the engine's scene table must not hide the scenes() method
+            res = await client.call_tool("get_scenes", {"file": "red_blue.mp4"})
+            assert not res.is_error and json.loads(res.content[0].text)["scenes"]
             res = await client.call_tool("search_footage", {"query": "x", "mode": "bad"})
             assert res.is_error
 
