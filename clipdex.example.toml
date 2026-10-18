@@ -11,6 +11,7 @@
 # frame_max_side = 512  # longest side of stored frames in pixels
 # frame_jpeg_quality = 4  # ffmpeg -q:v (2 = best, 31 = worst)
 # keyframes_first = true  # decode only keyframes first; falls back to full decode on big gaps
+# frame_store = "packed"  # packed = one file per video | files = one JPEG per frame
 
 # --- speech ---
 # asr_backend = "auto"  # auto | mlx | faster-whisper | none

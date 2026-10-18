@@ -50,7 +50,9 @@ clipdex runs the models one after the other: first SigLIP for all files, then Wh
 Only one model is in memory at a time. Each line shows the time left in the current pass (ETA).
 On a fanless MacBook Air, `clipdex index ... --throttle` uses smaller batches and pauses 5 s after each file.
 
-Everything goes into one SQLite file, a folder of small JPEG frames and a search cache (`vectors/`): about 55 MB per hour of footage.
+Everything goes into one SQLite file, the frames and a search cache (`vectors/`): about 55 MB per hour of footage
+(frames about 38 MB, database about 10 MB, search cache about 6 MB). The frames of one video are packed into one file,
+so 1,000 hours of footage make about 2,000 index files, not 1.8 million (`frame_store = "files"` keeps one JPEG per frame).
 The search maps the cache files instead of loading all vectors into memory, so its memory does not grow with the library.
 
 ## Fit clipdex to your machine

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import media, scenes, speech
+from . import framestore, media, scenes, speech
 from .config import Config
 from .library import ScannedFile, default_index_dir, fingerprint, mount_point, norm, scan_with_errors, volume_name
 from .store import STAGES, FileRow, Store
@@ -266,6 +266,35 @@ class Indexer:
 
     def _drop_frame_dir(self, file_id: int) -> None:
         shutil.rmtree(self._frame_dir(file_id), ignore_errors=True)
+        (self.frames_dir / f"{file_id}.pack").unlink(missing_ok=True)
+
+    def _pack_loose_frames(self) -> None:
+        """frame_store = "packed": move frames from one-JPEG-per-frame folders into one pack per video."""
+        if self.cfg.frame_store != "packed":
+            return
+        ids = [r[0] for r in self.store.query("SELECT DISTINCT file_id FROM frames WHERE image NOT LIKE '%.pack#%'")]
+        if ids:
+            self.log(f"Packing the frames of {len(ids)} file(s) into one file per video.")
+        for n, file_id in enumerate(ids, start=1):
+            rows = self.store.query("SELECT id, image FROM frames WHERE file_id=? ORDER BY idx, t", (file_id,))
+            rel = f"frames/{file_id}.pack"
+            try:
+                spans = framestore.write_pack([self.index_dir / r["image"] for r in rows], self.index_dir / rel)
+            except OSError as exc:
+                self.log(f"    warning: frames of file {file_id} not packed ({exc})")
+                continue
+            self.store.conn.executemany("UPDATE frames SET image=? WHERE id=?",
+                                        [(framestore.pack_ref(rel, o, size), r["id"])
+                                         for r, (o, size) in zip(rows, spans, strict=True)])
+            self.store.commit()
+            shutil.rmtree(self._frame_dir(file_id), ignore_errors=True)
+            if n % 200 == 0:
+                self.log(f"    packed {n}/{len(ids)}")
+        # folders left over from a stopped run: their frames are packed already
+        for d in self.frames_dir.iterdir():
+            if d.is_dir() and d.name.isdigit() and not self.store.query(
+                    "SELECT 1 FROM frames WHERE file_id=? AND image NOT LIKE '%.pack#%' LIMIT 1", (int(d.name),)):
+                shutil.rmtree(d, ignore_errors=True)
 
     def sync(self, prune: bool = False, force: bool = False) -> SyncReport:
         report = SyncReport()
@@ -398,8 +427,11 @@ class Indexer:
     def _run(self, only, stages, limit, retry_failed, prune, reembed, force, redo) -> RunReport:
         media.ensure_tools()
         started = time.time()
-        for tmp in self.frames_dir.glob("*.tmp"):
-            shutil.rmtree(tmp, ignore_errors=True)
+        for tmp in self.frames_dir.glob("*.tmp"):  # from a stopped run: frame folders and pack files
+            if tmp.is_dir():
+                shutil.rmtree(tmp, ignore_errors=True)
+            else:
+                tmp.unlink(missing_ok=True)
         report = RunReport()
         report.sync = self.sync(prune=prune, force=force)
         s = report.sync
@@ -412,6 +444,7 @@ class Indexer:
         if s.prune_refused:
             self.log("Warning: --prune would remove more than half of the index (or the folder looks empty). "
                      "Nothing was removed. Check the drive, then use --prune --force if this is correct.")
+        self._pack_loose_frames()
         wanted = self._wanted_stages(list(stages or []) + redo if stages else None)
         self._check_models(wanted, reembed)
         if redo:
@@ -449,6 +482,10 @@ class Indexer:
             report.seconds = time.time() - started
             return report
         self.log(f"Indexing {len(todo)} file(s). Stages: {', '.join(st for st in STAGES if st in wanted)}.")
+        if "frames" in wanted:
+            note = framestore.usage_note(self.cfg.frame_store, self.frames_dir)
+            if note:
+                self.log("Note: " + note)
         off = []
         if not self.cfg.qwen_enabled:
             off.append("action search and speech meaning (qwen_enabled = false)")
@@ -606,9 +643,14 @@ class Indexer:
         # frames
         if "frames" in wanted and not row.frames_done:
             final = self._frame_dir(row.id)
-            shutil.rmtree(final, ignore_errors=True)
+            self._drop_frame_dir(row.id)
             items = []
-            if p.frames:
+            if p.frames and self.cfg.frame_store == "packed":
+                rel = f"frames/{row.id}.pack"
+                spans = framestore.write_pack([fr.path for fr in p.frames], self.index_dir / rel)
+                items = [(fr.index, fr.t, framestore.pack_ref(rel, o, size))
+                         for fr, (o, size) in zip(p.frames, spans, strict=True)]
+            elif p.frames:
                 assert p.tmp_dir is not None
                 os.replace(p.tmp_dir, final)
                 p.tmp_dir = None
@@ -625,7 +667,7 @@ class Indexer:
             frame_rows = [r for r in self.store.frames_for_file(row.id) if r["emb"] is None]
             if frame_rows:
                 enc = self.models.siglip()
-                vecs = enc.encode_images([self.index_dir / r["image"] for r in frame_rows],
+                vecs = enc.encode_images([framestore.source(self.index_dir, r["image"]) for r in frame_rows],
                                          batch=self.cfg.siglip_batch)
                 self.store.set_frame_embeddings([(r["id"], v) for r, v in zip(frame_rows, vecs, strict=True)])
             self.store.update_file(row.id, visual_done=1)
@@ -671,8 +713,12 @@ class Indexer:
                 found = scenes.segment(times, embs, duration, self.cfg.scene_max_seconds,
                                        self.cfg.scene_cut_similarity, self.cfg.scene_step_similarity)
                 qwen = self.models.qwen()
-                sequences = [[str(self.index_dir / frame_rows[k]["image"]) for k in sc.frames] for sc in found]
-                vecs = qwen.embed_frame_sequences(sequences, batch=self.cfg.qwen_batch)
+                refs = [[frame_rows[k]["image"] for k in sc.frames] for sc in found]
+                vecs = []
+                step = max(1, self.cfg.qwen_batch)
+                for i in range(0, len(refs), step):  # load only the frames of one batch at a time
+                    part = [[framestore.qwen_item(self.index_dir, ref) for ref in seq] for seq in refs[i:i + step]]
+                    vecs.extend(qwen.embed_frame_sequences(part, batch=step))
                 for sc, vec in zip(found, vecs, strict=True):
                     self.store.add_scene(row.id, sc.start, sc.end, [frame_rows[k]["id"] for k in sc.frames], vec)
                 count = len(found)

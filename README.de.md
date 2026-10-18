@@ -48,7 +48,9 @@ clipdex lässt die Modelle nacheinander laufen: erst SigLIP für alle Dateien, d
 Es ist immer nur ein Modell im Speicher. Jede Zeile zeigt die Restzeit des aktuellen Durchgangs (ETA).
 Auf einem MacBook Air ohne Lüfter nimmt `clipdex index ... --throttle` kleinere Batches und macht nach jeder Datei 5 s Pause.
 
-Alles liegt in einer SQLite-Datei, einem Ordner mit kleinen JPEG-Bildern und einem Such-Cache (`vectors/`): ungefähr 55 MB pro Stunde Footage.
+Alles liegt in einer SQLite-Datei, den Vorschaubildern und einem Such-Cache (`vectors/`): ungefähr 55 MB pro Stunde Footage
+(Bilder ca. 38 MB, Datenbank ca. 10 MB, Such-Cache ca. 6 MB). Die Bilder eines Videos liegen in einer Datei.
+So entstehen für 1.000 Stunden Footage ca. 2.000 Index-Dateien statt 1,8 Millionen (`frame_store = "files"` speichert ein JPEG pro Bild).
 Die Suche liest die Cache-Dateien direkt von der SSD, statt alle Vektoren in den RAM zu laden. So wächst ihr RAM-Bedarf nicht mit der Bibliothek.
 
 ## An deinen Rechner anpassen

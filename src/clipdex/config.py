@@ -37,6 +37,7 @@ class Config:
     frame_max_side: int = 512  # longest side of stored frames in pixels
     frame_jpeg_quality: int = 4  # ffmpeg -q:v (2 = best, 31 = worst)
     keyframes_first: bool = True  # decode only keyframes first; falls back to full decode on big gaps
+    frame_store: str = "packed"  # packed = one file per video | files = one JPEG per frame
 
     # --- speech -------------------------------------------------------------
     asr_backend: str = "auto"  # auto | mlx | faster-whisper | none
@@ -116,6 +117,8 @@ class Config:
             if isinstance(current, list) and not isinstance(value, list):
                 raise ValueError(f"{source}: '{key}' must be a list")
             setattr(updated, key, value)
+        if updated.frame_store not in ("packed", "files"):
+            raise ValueError(f"{source}: frame_store must be \"packed\" or \"files\"")
         longest = max(updated.scene_max_seconds, updated.speech_chunk_seconds)
         if updated.moment_max_seconds < longest:
             raise ValueError(f"{source}: moment_max_seconds ({updated.moment_max_seconds:g}) must be at least "

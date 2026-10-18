@@ -515,8 +515,17 @@ class SearchEngine:
             r = rows[0]
             f = self.store.file_by_id(r["file_id"])
             out.append({"frame_id": int(fid), "file": f.relpath if f else None, "at": round(r["t"], 2),
-                        "at_tc": tc(r["t"]), "image": str(self.index_dir / r["image"])})
+                        "at_tc": tc(r["t"]), "image": str(self.index_dir / r["image"]), "ref": r["image"]})
         return out
+
+    def frame_jpeg(self, info: dict) -> bytes | None:
+        """The JPEG bytes of a frame from frame_info(), or None if its file is gone."""
+        from . import framestore
+
+        try:
+            return framestore.read_bytes(self.index_dir, info["ref"])
+        except OSError:
+            return None
 
     def _resolve_file(self, file: str):
         """Find a file by relative path, absolute path or a unique end of the path."""

@@ -32,6 +32,7 @@ uv run clipdex mcp LIB             # MCP server on stdio (search only)
 | `src/clipdex/embed_siglip.py` | SigLIP 2 frame and text vectors |
 | `src/clipdex/embed_qwen.py` | Qwen3-VL-Embedding scene and text vectors (follows the official reference code) |
 | `src/clipdex/scenes.py` | Split a file into short scenes from frame vectors |
+| `src/clipdex/framestore.py` | Stored frames: one pack file per video (default) or one JPEG per frame |
 | `src/clipdex/indexer.py` | Sync with the disk, run stages per file, resume, prefetch thread |
 | `src/clipdex/store.py` | SQLite schema, FTS5 triggers, float16 vector BLOBs |
 | `src/clipdex/search.py` | Four channels, weak-hit filters, reciprocal rank fusion into moments |

@@ -125,7 +125,8 @@ class QwenEmbedder:
                 frames = [frames[i] for i in idx]
             content.append({
                 "type": "video",
-                "video": ["file://" + f for f in frames],
+                # a file path, or a PIL image (frames from a pack file)
+                "video": ["file://" + f if isinstance(f, str) else f for f in frames],
                 "total_pixels": MAX_TOTAL_PIXELS,
             })
         if text is not None:

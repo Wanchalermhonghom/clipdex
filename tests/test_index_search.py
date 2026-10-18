@@ -38,7 +38,8 @@ def test_index_builds_all_stages(library, cfg):
     green = idx.store.file_by_path("B/green.mov")
     assert green.has_audio == 0 and green.language is None
     red_blue = idx.store.file_by_path("A/red_blue.mp4")
-    assert red_blue.language == "de" and (idx.index_dir / "frames" / str(red_blue.id)).is_dir()
+    assert red_blue.language == "de" and (idx.index_dir / "frames" / f"{red_blue.id}.pack").is_file()
+    assert not (idx.index_dir / "frames" / str(red_blue.id)).exists()  # one file per video, no folder
     # scenes split at the color change
     rows = idx.store.query("SELECT start, end FROM scenes WHERE file_id=? ORDER BY start", (red_blue.id,))
     assert [(r["start"], round(r["end"])) for r in rows] == [(0.0, 6), (6.0, 12)]
@@ -607,3 +608,72 @@ def test_best_time_prefers_the_spoken_word(engine):
     out = engine.search("Claude Code Laptop", mode="speech")
     top = out["results"][0]
     assert top["matched"] == ["speech", "speech_sem"] and top["best"] == pytest.approx(8.4)
+
+
+# --- frame storage ---------------------------------------------------------------------------------
+
+def test_frames_are_packed_by_default(library, cfg):
+    from clipdex import framestore
+
+    idx, _, _ = build(library, cfg)
+    refs = [r["image"] for r in idx.store.query("SELECT image FROM frames")]
+    assert refs and all(framestore.is_packed(r) for r in refs)
+    assert framestore.read_bytes(idx.index_dir, refs[0])[:2] == b"\xff\xd8"  # a JPEG
+    assert sorted(p.suffix for p in (idx.index_dir / "frames").iterdir()) == [".pack"] * 3
+
+
+def test_loose_frames_are_packed_later(library, cfg):
+    import json
+
+    from mcp import Client
+
+    from clipdex.mcp_server import build_server
+
+    files_cfg = cfg.apply({"frame_store": "files"})
+    logs: list[str] = []
+    idx = Indexer(library, files_cfg, models=FakeModels(files_cfg, TRANSCRIPTS), log=logs.append)
+    idx.run()
+    assert any('frame_store = "files"' in m for m in logs)  # the disk use note
+    frames = idx.index_dir / "frames"
+    assert sum(1 for p in frames.iterdir() if p.is_dir()) == 3
+    before = engine_for(idx, cfg).search("blue", mode="visual")["results"][0]
+
+    idx2 = Indexer(library, cfg, models=FakeModels(cfg, TRANSCRIPTS), log=logs.append)  # packed (default)
+    idx2.run()
+    assert sorted(p.suffix for p in frames.iterdir()) == [".pack"] * 3
+    engine = engine_for(idx2, cfg)
+    after = engine.search("blue", mode="visual")["results"][0]
+    assert (after["file"], after["frame_id"]) == (before["file"], before["frame_id"])
+
+    async def view():
+        async with Client(build_server(engine)) as client:
+            res = await client.call_tool("view_frames", {"frame_ids": [after["frame_id"]]})
+            return [c.type for c in res.content], json.dumps([getattr(c, "mime_type", None) for c in res.content])
+
+    kinds, mimes = asyncio.run(view())
+    assert kinds == ["text", "image"] and "image/jpeg" in mimes
+
+
+def test_redo_frames_writes_a_new_pack(library, cfg):
+    idx, _, _ = build(library, cfg)
+    pack = idx.index_dir / "frames" / f"{idx.store.file_by_path('B/green.mov').id}.pack"
+    old = pack.stat().st_mtime_ns
+    idx.run(redo=["frames"], only="b/green")
+    assert pack.is_file() and pack.stat().st_mtime_ns != old
+    assert not list((idx.index_dir / "frames").glob("*.tmp"))
+
+
+def test_frame_usage_note(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from clipdex import framestore
+
+    assert framestore.usage_note("packed", tmp_path) is None
+    monkeypatch.setattr(os, "statvfs", lambda p: SimpleNamespace(f_frsize=128 * 1024))
+    note = framestore.usage_note("files", tmp_path)
+    assert "1,800 files" in note and "128 KB blocks" in note and "236 MB per hour" in note
+    from clipdex.config import Config
+
+    with pytest.raises(ValueError, match="frame_store"):
+        Config().apply({"frame_store": "zip"})

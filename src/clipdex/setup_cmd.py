@@ -89,6 +89,7 @@ def run_setup(root: Path, index_dir: Path, profile_name: str | None, assume_yes:
     print(f"\nProfile: {profile.name} — {profile.description}")
     print(f"Estimated peak memory: indexer about {profile.ram_index_gb:.0f} GB, "
           f"MCP server about {profile.ram_mcp_gb:.0f} GB (estimate, not measured on your machine)")
+    print("Index size: about 55 MB per hour of footage (frames 38 MB, database 10 MB, search cache 6 MB).")
     for note in profile.notes:
         print(f"Note: {note}")
 

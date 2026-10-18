@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Literal
 
 from mcp.server.mcpserver import Image, MCPServer
@@ -79,10 +78,8 @@ def build_server(engine: SearchEngine) -> MCPServer:
                 out.append(f"frame {info['frame_id']}: {info['error']}")
                 continue
             out.append(f"frame {info['frame_id']}: {info['file']} at {info['at_tc']} ({info['at']} s)")
-            if Path(info["image"]).exists():
-                out.append(Image(path=info["image"]))
-            else:
-                out.append("(image file is missing)")
+            data = engine.frame_jpeg(info)
+            out.append(Image(data=data, format="jpeg") if data else "(image file is missing)")
         return out
 
     @server.tool()

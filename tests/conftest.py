@@ -26,8 +26,12 @@ DIM = 64
 
 
 def _color_of_image(path) -> int:
-    with Image.open(path) as im:
-        mean = np.asarray(im.convert("RGB"), dtype=np.float32).reshape(-1, 3).mean(axis=0)
+    """path: a file path, a file object (frames from a pack) or a PIL image."""
+    if isinstance(path, Image.Image):
+        mean = np.asarray(path.convert("RGB"), dtype=np.float32).reshape(-1, 3).mean(axis=0)
+    else:
+        with Image.open(path) as im:
+            mean = np.asarray(im.convert("RGB"), dtype=np.float32).reshape(-1, 3).mean(axis=0)
     dists = [np.linalg.norm(mean - np.array(rgb)) for rgb, _ in COLORS.values()]
     return int(np.argmin(dists))
 
