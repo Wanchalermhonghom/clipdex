@@ -117,6 +117,14 @@ class Config:
             if isinstance(current, list) and not isinstance(value, list):
                 raise ValueError(f"{source}: '{key}' must be a list")
             setattr(updated, key, value)
+        if not 0.0 < updated.visual_min_prob < 1.0:
+            raise ValueError(f"{source}: visual_min_prob must be between 0 and 1 (not {updated.visual_min_prob:g})")
+        for key in ("scene_floor", "speech_sem_floor"):
+            if not -1.0 <= getattr(updated, key) <= 1.0:
+                raise ValueError(f"{source}: {key} must be between -1 and 1")
+        for key in ("scene_margin", "speech_sem_margin", "visual_rel_logit"):
+            if getattr(updated, key) < 0:
+                raise ValueError(f"{source}: {key} must not be negative")
         if updated.frame_store not in ("packed", "files"):
             raise ValueError(f"{source}: frame_store must be \"packed\" or \"files\"")
         longest = max(updated.scene_max_seconds, updated.speech_chunk_seconds)

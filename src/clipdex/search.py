@@ -205,7 +205,7 @@ class SearchEngine:
         keep = (logit >= top - self.cfg.visual_rel_logit) & (logit >= min_logit)
         idx = np.flatnonzero(keep)
         order = [int(i) for i in idx[np.argsort(-logit[idx], kind="stable")][: self.cfg.channel_top_k]]
-        diag["visual"] = {"best_prob": round(enc.prob(top), 4), "kept": len(order)}
+        diag["visual"] = {"best_prob": round(enc.prob(top), 4), "best_logit": round(top, 3), "kept": len(order)}
         # A frame stands for the time until the next sampled frame.
         span = self.cfg.frame_interval
         hits = []

@@ -34,6 +34,8 @@ _MODE_CHANNEL = {mode: channel for channel, (_, mode, _) in FLOORS.items()}
 _PROBE_RE = re.compile(r"^\s*(?:(visual|action|speech|auto)\s*:\s*)?(.*?)\s*(?:@\s*(.+?))?\s*$", re.I)
 STEP_COS = 0.02  # the step that AGENTS.md uses for cosine floors
 STEP_LOGIT = 0.5  # the same idea for the visual probability, in logit space
+PROB_MIN, PROB_MAX = 1e-6, 0.999  # suggested visual_min_prob stays in this range
+COS_MIN, COS_MAX = 0.0, 0.99  # suggested cosine floors stay in this range
 
 
 @dataclass
@@ -70,7 +72,10 @@ def measure(engine: SearchEngine, probe: Probe) -> Probe:
         d = diag.get(channel)
         if not d:
             continue
-        probe.scores[channel] = d.get("best_prob") if channel == "visual" else d.get("best")
+        if channel == "visual":  # the logit keeps weak matches that round to a probability of 0.0
+            probe.scores[channel] = _prob(d["best_logit"]) if "best_logit" in d else d.get("best_prob")
+        else:
+            probe.scores[channel] = d.get("best")
         probe.kept[channel] = int(d.get("kept", 0))
         if channel != "visual" and d.get("threshold") is not None and d["threshold"] > _floor(engine, channel) + 1e-9:
             probe.by_margin.add(channel)  # the query's baseline + margin was higher than the floor
@@ -142,7 +147,10 @@ def suggest(engine: SearchEngine, probes: list[Probe]) -> list[Suggestion]:
             out.append(Suggestion(setting, current, None, "keep: the floor separates the probes." + note))
             continue
         value = back(target)
-        value = round(value, 4) if kind == "prob" else math.floor(value * 100 + 1e-9) / 100
+        if kind == "prob":  # 3 significant digits, inside the range that Config accepts
+            value = min(max(float(f"{value:.3g}"), PROB_MIN), PROB_MAX)
+        else:
+            value = min(max(math.floor(value * 100 + 1e-9) / 100, COS_MIN), COS_MAX)
         parts = []
         if low is not None:
             parts.append(f"lowest thing in the footage: '{low.label}' {low.scores[channel]:.4g}")

@@ -86,5 +86,20 @@ def test_cli_calibrate_writes_config(library, cfg, capsys, monkeypatch):
     assert cli.main(["calibrate", str(library), "--present", "visual: red @ red_blue",
                      "--absent", "visual: a beach", "--write"]) == 0
     out = capsys.readouterr().out
-    assert "visual 0.8808," in out and "visual_min_prob = 0.95 -> 0.8176" in out
+    assert "visual 0.8808," in out and "visual_min_prob = 0.95 -> 0.818" in out
     assert load_config(idx.index_dir).visual_min_prob < 0.88
+
+
+def test_weak_match_never_gives_a_zero_floor(library, cfg):
+    from types import SimpleNamespace
+
+    p = calibrate.Probe("eine Katze", True, "visual", "IMG_2010", scores={"visual": 4e-5}, kept={"visual": 0})
+    (s,) = calibrate.suggest(SimpleNamespace(cfg=cfg), [p])
+    assert 0 < s.value < 4e-5  # below the weak match, but never 0
+    p.scores["visual"] = 1e-12
+    (s,) = calibrate.suggest(SimpleNamespace(cfg=cfg), [p])
+    assert s.value == calibrate.PROB_MIN
+    with pytest.raises(ValueError, match="visual_min_prob"):
+        cfg.apply({"visual_min_prob": 0.0})
+    with pytest.raises(ValueError, match="scene_floor"):
+        cfg.apply({"scene_floor": 1.5})
