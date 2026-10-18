@@ -15,7 +15,11 @@
 # --- speech ---
 # asr_backend = "auto"  # auto | mlx | faster-whisper | none
 # asr_model = ""  # empty = backend default (whisper large-v3-turbo)
-# language = "auto"  # auto (detected per file) or a Whisper code like "de" / "en"
+# "auto" detects the language once per file (one quick detection pass). A Whisper code like "de" or "en"
+# skips the detection pass, but speech in other languages comes out wrong.
+# language = "auto"
+# With language = "auto": choose only from these codes, e.g. ["de", "en"]. Empty = any language.
+# languages = []
 # vad_threshold = 0.5
 # min_speech_seconds = 1.0  # less detected speech than this = no transcription
 # speech_chunk_seconds = 20.0  # length of transcript chunks for semantic speech search

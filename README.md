@@ -40,7 +40,9 @@ For every file, clipdex does these steps:
 2. `ffmpeg` saves one frame every 2 seconds (512 px). It decodes only keyframes first, because that is fast. If the keyframes are too far apart, it decodes the full file.
 3. SigLIP 2 makes one vector per frame.
 4. [Silero VAD](https://github.com/snakers4/silero-vad) finds the speech. Whisper transcribes only these parts. Files without speech are skipped.
-5. Whisper detects the language per file. It listens where the speech starts.
+5. Whisper detects the language once per file, where the speech starts. This is a quick detection pass, not a full transcription.
+   To skip it, set `language = "de"` in the config. For footage in German and English, keep `language = "auto"`
+   and set `languages = ["de", "en"]`. Then clipdex picks only between these two.
 6. clipdex splits each file into short scenes (10 s or less). A new scene starts when the picture changes a lot.
 7. Qwen3-VL-Embedding makes one vector per scene and per transcript part (20 s).
 
@@ -137,7 +139,8 @@ Then put new values into `/Volumes/MySSD/.clipdex/config.toml`, for example `sce
 ## Limits
 
 - The default search thresholds come from a small test with sample images and the 2B model. Check them on your footage.
-- Whisper picks one language per file. For files that mix languages, set `--language`.
+- Whisper picks one language per file. A file that mixes languages gets the language that its speech starts with.
+  A fixed `language` transcribes speech in other languages wrongly.
 - Log and HDR footage looks flat in the stored frames. Visual search can be weaker.
 - ffmpeg cannot read BRAW or R3D. These files show up as failed.
 - A model change needs `clipdex index ... --reembed visual` or `--reembed qwen`.

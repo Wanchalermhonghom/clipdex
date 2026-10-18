@@ -104,6 +104,11 @@ def overlap(seg_start: float, seg_end: float, regions: Sequence[tuple[float, flo
 # --- Whisper backends ---------------------------------------------------------------------
 
 class WhisperBackend(Protocol):
+    """A speech backend. It can also have `detect_language(audio) -> {code: probability}`.
+
+    Without detect_language, clipdex detects the language with a transcription pass, which costs more.
+    """
+
     name: str
 
     def transcribe(self, audio: np.ndarray, clips: list[tuple[float, float]],
@@ -150,6 +155,19 @@ class MLXWhisper:
                 compression_ratio=float(s.get("compression_ratio", 1.0))))
         return result.get("language"), segments
 
+    def detect_language(self, audio: np.ndarray) -> dict[str, float]:
+        """Language probabilities for the first 30 s: one encoder pass, no transcription."""
+        import mlx.core as mx
+        from mlx_whisper.audio import N_FRAMES, N_SAMPLES, log_mel_spectrogram, pad_or_trim
+        from mlx_whisper.transcribe import ModelHolder
+
+        # Same model cache and dtype as mlx_whisper.transcribe (fp16 by default).
+        model = ModelHolder.get_model(self.model, mx.float16)
+        mel = log_mel_spectrogram(audio, n_mels=model.dims.n_mels, padding=N_SAMPLES)
+        segment = pad_or_trim(mel, N_FRAMES, axis=-2).astype(mx.float16)
+        _, probs = model.detect_language(segment)
+        return {str(k): float(v) for k, v in probs.items()}
+
 
 class FasterWhisper:
     name = "faster-whisper"
@@ -183,6 +201,11 @@ class FasterWhisper:
                 no_speech_prob=float(s.no_speech_prob), avg_logprob=float(s.avg_logprob),
                 compression_ratio=float(s.compression_ratio)))
         return info.language, segments
+
+    def detect_language(self, audio: np.ndarray) -> dict[str, float]:
+        """Language probabilities for the first 30 s: one encoder pass, no transcription."""
+        _, _, all_probs = self.model.detect_language(audio=audio)
+        return {str(code): float(p) for code, p in all_probs}
 
 
 def is_apple_silicon() -> bool:
@@ -229,8 +252,30 @@ def detect_language_window(regions: list[tuple[float, float]], window: float = 3
     return a, a + window
 
 
+def choose_language(backend: WhisperBackend, audio: np.ndarray, allowed: Sequence[str] = ()) -> str | None:
+    """Detect the language of `audio`. With `allowed`, pick only from these codes."""
+    allowed = [a.strip().lower() for a in allowed if a.strip()]
+    detect = getattr(backend, "detect_language", None)
+    probs: dict[str, float] | None = None
+    if callable(detect):
+        try:
+            probs = detect(audio)
+        except Exception as exc:  # noqa: BLE001 - an API change must not stop the indexer
+            log.warning("Language detection failed (%s). Using a transcription pass instead.", exc)
+    if probs:
+        candidates = {k: v for k, v in probs.items() if k in allowed} if allowed else probs
+        if candidates:
+            return max(candidates, key=candidates.__getitem__)
+        return allowed[0]
+    lang, _ = backend.transcribe(audio, [], None)
+    if allowed and lang not in allowed:
+        return allowed[0]  # the first allowed language is the fallback
+    return lang
+
+
 def transcribe(audio: np.ndarray, backend: WhisperBackend, duration: float, language: str = "auto",
-               vad_threshold: float = 0.5, min_speech_seconds: float = 1.0) -> Transcript:
+               vad_threshold: float = 0.5, min_speech_seconds: float = 1.0,
+               languages: Sequence[str] = ()) -> Transcript:
     raw_regions = detect_speech(audio, vad_threshold)
     speech_seconds = float(sum(b - a for a, b in raw_regions))
     if speech_seconds < min_speech_seconds:
@@ -242,8 +287,7 @@ def transcribe(audio: np.ndarray, backend: WhisperBackend, duration: float, lang
         # Whisper detects the language on the first 30 s of its input. Footage often starts
         # with silence or B-roll, so detect on a window that starts where speech starts.
         a, b = detect_language_window(clips)
-        piece = audio[int(a * AUDIO_RATE): int(b * AUDIO_RATE)]
-        lang, _ = backend.transcribe(piece, [], None)
+        lang = choose_language(backend, audio[int(a * AUDIO_RATE): int(b * AUDIO_RATE)], languages)
     # Transcribe each speech clip on its own and shift the times back. Passing all clips at once
     # does not skip the silence between them in mlx-whisper 0.4 (it keeps decoding from the
     # end of one clip to the next).

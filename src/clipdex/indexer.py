@@ -78,7 +78,7 @@ class Models:
         if backend is None:
             return speech.Transcript(language=None, speech_seconds=0.0, segments=[])
         return speech.transcribe(audio, backend, duration, self.cfg.language,
-                                 self.cfg.vad_threshold, self.cfg.min_speech_seconds)
+                                 self.cfg.vad_threshold, self.cfg.min_speech_seconds, self.cfg.languages)
 
 
 @dataclass

@@ -38,7 +38,9 @@ Für jede Datei läuft diese Kette:
 2. `ffmpeg` speichert alle 2 Sekunden ein Bild (512 px). Zuerst dekodiert es nur Keyframes. Das ist schnell. Bei großen Lücken dekodiert es die ganze Datei.
 3. SigLIP 2 berechnet einen Vektor pro Bild.
 4. [Silero VAD](https://github.com/snakers4/silero-vad) sucht die Sprache. Whisper transkribiert nur diese Stellen. Dateien ohne Sprache überspringt es.
-5. Whisper erkennt die Sprache pro Datei. Es hört dort hin, wo die Sprache beginnt.
+5. Whisper erkennt die Sprache einmal pro Datei, dort, wo die Sprache beginnt. Das ist ein kurzer Erkennungsschritt, keine ganze Transkription.
+   Mit `language = "de"` in der Config fällt er weg. Für Footage auf Deutsch und Englisch lässt du `language = "auto"`
+   und setzt `languages = ["de", "en"]`. Dann wählt clipdex nur zwischen diesen beiden.
 6. clipdex teilt jede Datei in kurze Szenen (max. 10 s). Eine neue Szene beginnt, wenn sich das Bild stark ändert.
 7. Qwen3-VL-Embedding berechnet einen Vektor pro Szene und pro Transkript-Abschnitt (20 s).
 
@@ -135,7 +137,8 @@ Trage neue Werte in `/Volumes/T7/.clipdex/config.toml` ein, z. B. `scene_floor =
 ## Grenzen
 
 - Die Standard-Schwellen stammen aus einem kleinen Test mit Beispielbildern und dem 2B-Modell. Prüfe sie mit deinem Footage.
-- Whisper wählt eine Sprache pro Datei. Für Dateien mit gemischter Sprache setzt du `--language`.
+- Whisper wählt eine Sprache pro Datei. Eine Datei mit gemischter Sprache bekommt die Sprache, mit der das Sprechen beginnt.
+  Mit fester `language` transkribiert Whisper andere Sprachen falsch.
 - Log- und HDR-Footage sieht in den gespeicherten Bildern flach aus. Die Bildsuche kann dann schwächer sein.
 - ffmpeg kann BRAW und R3D nicht lesen. Diese Dateien erscheinen als Fehler.
 - Ein Modellwechsel braucht `clipdex index ... --reembed visual` oder `--reembed qwen`.

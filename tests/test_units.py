@@ -138,6 +138,71 @@ def test_forced_language_skips_detection(monkeypatch):
     assert len(backend.calls) == 1 and backend.calls[0][2] == "en"
 
 
+class _DetectBackend(_Backend):
+    def __init__(self, probs=None, fail=False):
+        super().__init__()
+        self.probs = probs or {"nl": 0.5, "de": 0.3, "en": 0.2}
+        self.fail = fail
+        self.detected = []
+
+    def detect_language(self, audio):
+        self.detected.append(len(audio))
+        if self.fail:
+            raise RuntimeError("API changed")
+        return self.probs
+
+
+def test_language_detection_pass_does_not_transcribe(monkeypatch):
+    monkeypatch.setattr(speech, "detect_speech", lambda audio, threshold: [(12.0, 20.0), (30.0, 31.0)])
+    audio = np.zeros(40 * media.AUDIO_RATE, np.float32)
+    backend = _DetectBackend()
+    tr = speech.transcribe(audio, backend, duration=40.0)
+    assert backend.detected == [40 * media.AUDIO_RATE - int(11.6 * media.AUDIO_RATE)]  # window at first speech
+    assert len(backend.calls) == 2 and all(c[2] == "nl" for c in backend.calls)  # one call per clip, no extra
+    assert tr.language == "nl"
+    backend = _DetectBackend()
+    tr = speech.transcribe(audio, backend, duration=40.0, languages=["de", "en"])
+    assert tr.language == "de" and all(c[2] == "de" for c in backend.calls)
+
+
+def test_choose_language_fallbacks():
+    audio = np.zeros(16000, np.float32)
+    # detection raises: fall back to a transcription pass ("de" from _Backend)
+    backend = _DetectBackend(fail=True)
+    assert speech.choose_language(backend, audio) == "de" and backend.calls[0][2] is None
+    # the transcription pass finds a language that is not allowed: use the first allowed one
+    assert speech.choose_language(_Backend(), audio, ["en", "fr"]) == "en"
+    assert speech.choose_language(_DetectBackend({"ja": 0.9}), audio, [" EN "]) == "en"
+
+
+def test_config_language_reaches_transcription(monkeypatch, tmp_path):
+    from clipdex.config import load_config
+    from clipdex.indexer import Models
+
+    monkeypatch.setattr(speech, "detect_speech", lambda audio, threshold: [(0.0, 5.0)])
+    (tmp_path / "config.toml").write_text('language = "de"\n')
+    models = Models(load_config(tmp_path))
+    backend = _DetectBackend()
+    models._asr, models._asr_loaded = backend, True
+    models.transcribe(np.zeros(16000 * 6, np.float32), 6.0)
+    assert backend.detected == [] and [c[2] for c in backend.calls] == ["de"]
+    (tmp_path / "config.toml").write_text('languages = ["de", "en"]\n')
+    models = Models(load_config(tmp_path))
+    models._asr, models._asr_loaded = _DetectBackend(), True
+    assert models.transcribe(np.zeros(16000 * 6, np.float32), 6.0).language == "de"
+
+
+def test_example_toml_lists_every_setting():
+    import re
+    from pathlib import Path
+
+    from clipdex.config import Config
+
+    text = (Path(__file__).parent.parent / "clipdex.example.toml").read_text()
+    keys = set(re.findall(r"^# ([a-z_]+) = ", text, flags=re.M))
+    assert keys == Config.field_names()
+
+
 def test_extract_frames_short_gop(video_dir, tmp_path):
     src = video_dir / "A" / "red_blue.mp4"
     info = media.probe(src)
