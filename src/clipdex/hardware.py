@@ -205,7 +205,8 @@ def memory_report() -> str:
 
         peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         peak_bytes = peak if sys.platform == "darwin" else peak * 1024
-        parts.append(f"process peak {peak_bytes / GB:.1f} GB")
+        parts.append(f"process peak {peak_bytes / GB:.1f} GB" if peak_bytes >= GB
+                     else f"process peak {peak_bytes / 1e6:.0f} MB")
     except (ImportError, OSError):
         pass
     torch = sys.modules.get("torch")

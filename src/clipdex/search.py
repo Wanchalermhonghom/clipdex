@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from . import fts
+from . import scenes as scene_split
 from .config import Config
 from .library import norm
 from .store import Store
@@ -487,6 +488,39 @@ class SearchEngine:
             lines.append(line)
         return {"file": f.relpath, "path": self.abs_path(f.relpath), "language": f.language,
                 "duration": f.duration, "speech_done": bool(f.speech_done), "segments": lines}
+
+    def scenes(self, file: str, changes_only: bool = False) -> dict:
+        """Scene boundaries of one file, computed from the stored frame vectors.
+
+        cut = "start" (first scene), "picture change" (the picture changed a lot) or
+        "length limit" (the scene reached scene_max_seconds; no visible change).
+        changes_only=True ignores the length limit, so every boundary is a real change.
+        """
+        f = self._resolve_file(file)
+        rows = [r for r in self.store.frames_for_file(f.id) if r["emb"] is not None]
+        out = {"file": f.relpath, "path": self.abs_path(f.relpath), "duration": f.duration,
+               "visual_done": bool(f.visual_done), "scenes": []}
+        if not rows:
+            return out
+        times = [float(r["t"]) for r in rows]
+        embs = np.stack([np.frombuffer(r["emb"], dtype=np.float16).astype(np.float32) for r in rows])
+        max_seconds = math.inf if changes_only else self.cfg.scene_max_seconds
+        found = scene_split.segment(times, embs, f.duration or 0.0, max_seconds, self.cfg.scene_cut_similarity)
+        for k, sc in enumerate(found):
+            first = sc.frames[0]
+            if k == 0:
+                cut, similarity = "start", None
+            else:
+                similarity = float(embs[first] @ embs[found[k - 1].frames[0]])
+                cut = "picture change" if similarity < self.cfg.scene_cut_similarity else "length limit"
+            out["scenes"].append({
+                "index": k + 1, "start": round(sc.start, 2), "end": round(sc.end, 2),
+                "start_tc": tc(sc.start), "end_tc": tc(sc.end), "cut": cut,
+                "similarity_to_previous": None if similarity is None else round(similarity, 3),
+                "frame_id": int(rows[first]["id"]),
+                "frame_ids": [int(rows[i]["id"]) for i in sc.frames],
+            })
+        return out
 
     def list_files(self, path_contains: str | None = None, limit: int = 200) -> dict:
         needle = norm(path_contains) if path_contains else None

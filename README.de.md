@@ -71,6 +71,7 @@ clipdex search "Laptop auf einem Holztisch" /Volumes/T7
 clipdex search '"claude code"' /Volumes/T7 --mode speech        # exakte Wörter in doppelten Anführungszeichen
 clipdex search "Sonnenuntergang am Strand" /Volumes/T7 --in Thailand
 clipdex transcript C0012.MP4 /Volumes/T7
+clipdex scenes C0012.MP4 /Volumes/T7 --changes-only            # jeder Bildwechsel
 clipdex search "rotes Auto" /Volumes/T7 --json                  # für Skripte
 ```
 
@@ -102,6 +103,7 @@ Der Agent bekommt diese Tools:
 | `search_footage` | Momente suchen (Datei, Start, Ende, bester Zeitpunkt) |
 | `view_frames` | Vorschaubilder ansehen, um Treffer zu prüfen |
 | `get_transcript` | Transkript einer Datei mit Zeitstempeln, auch pro Wort |
+| `get_scenes` | Szenengrenzen einer Datei, mit dem Grund für jeden Schnitt |
 | `similar_shots` | Ähnlich aussehende Shots finden |
 | `list_files` | Dateien mit Länge, Auflösung und Sprache |
 | `index_status` | Statistik und fehlerhafte Dateien |

@@ -73,6 +73,7 @@ clipdex search "laptop on a wooden desk" /Volumes/MySSD
 clipdex search '"claude code"' /Volumes/MySSD --mode speech        # exact words in double quotes
 clipdex search "Sonnenuntergang am Strand" /Volumes/MySSD --in Thailand
 clipdex transcript C0012.MP4 /Volumes/MySSD
+clipdex scenes C0012.MP4 /Volumes/MySSD --changes-only               # every picture change
 clipdex search "red car" /Volumes/MySSD --json                     # for scripts
 ```
 
@@ -104,6 +105,7 @@ The MCP server gives the agent these tools:
 | `search_footage` | Find moments (file, start, end, best time) |
 | `view_frames` | Show the stored frames, so the agent can check a hit |
 | `get_transcript` | Transcript of one file with timestamps, also per word |
+| `get_scenes` | Scene boundaries of one file, with the reason for each cut |
 | `similar_shots` | Find shots that look like a given frame |
 | `list_files` | Files with duration, resolution and language |
 | `index_status` | Statistics and failed files |

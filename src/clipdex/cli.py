@@ -1,4 +1,4 @@
-"""Command line interface: clipdex index | search | status | transcript | similar | mcp | doctor."""
+"""Command line interface: clipdex setup | index | search | status | transcript | scenes | similar | mcp | doctor."""
 
 from __future__ import annotations
 
@@ -111,6 +111,19 @@ def cmd_transcript(args) -> int:
         print(f"{data['file']}  language={data['language']}")
         for s in data["segments"]:
             print(f"[{s['start_tc']}] {s['text']}")
+    return 0
+
+
+def cmd_scenes(args) -> int:
+    engine = _engine(args)
+    data = engine.scenes(args.file, changes_only=args.changes_only)
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=1))
+        return 0
+    print(f"{data['file']}  ({len(data['scenes'])} scenes)")
+    for sc in data["scenes"]:
+        sim = "" if sc["similarity_to_previous"] is None else f"  similarity {sc['similarity_to_previous']:.2f}"
+        print(f"  {sc['index']:>3}. {sc['start_tc']} – {sc['end_tc']}  {sc['cut']}{sim}  frame {sc['frame_id']}")
     return 0
 
 
@@ -256,6 +269,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--no-qwen", action="store_true", help=argparse.SUPPRESS)
     sp.set_defaults(func=cmd_transcript)
+
+    sp = sub.add_parser("scenes", help="list the scene boundaries of one file")
+    sp.add_argument("file")
+    common(sp)
+    sp.add_argument("--changes-only", action="store_true", help="only boundaries where the picture changes")
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--no-qwen", action="store_true", help=argparse.SUPPRESS)
+    sp.set_defaults(func=cmd_scenes)
 
     sp = sub.add_parser("similar", help="find shots similar to a frame")
     sp.add_argument("frame_id", type=int)

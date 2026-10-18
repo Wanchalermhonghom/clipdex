@@ -227,7 +227,7 @@ def test_mcp_tools(engine):
     async def run():
         async with Client(server) as client:
             tools = {t.name for t in (await client.list_tools()).tools}
-            assert tools == {"search_footage", "view_frames", "get_transcript", "similar_shots",
+            assert tools == {"search_footage", "view_frames", "get_transcript", "get_scenes", "similar_shots",
                              "list_files", "index_status"}
             res = await client.call_tool("search_footage", {"query": "blue", "mode": "visual"})
             import json
@@ -400,3 +400,17 @@ def test_unreadable_folder_is_protected_without_permissions(library, cfg, monkey
     report = idx.run(prune=True)
     assert report.sync.pruned == 0 and report.sync.missing == 0
     assert idx.store.file_by_path("B/sub/yellow_red.mkv") is not None
+
+
+def test_scenes_with_cut_reasons(library, cfg):
+    cfg = cfg.apply({"scene_max_seconds": 4.0})
+    idx, _, _ = build(library, cfg)
+    engine = engine_for(idx, cfg)
+    data = engine.scenes("red_blue.mp4")
+    spans = [(s["start"], s["end"], s["cut"]) for s in data["scenes"]]
+    # red 0-6, blue 6-12, frames every 2 s, scenes at most 4 s long
+    assert spans == [(0.0, 4.0, "start"), (4.0, 6.0, "length limit"),
+                     (6.0, 10.0, "picture change"), (10.0, 12.0, "length limit")]
+    only = engine.scenes("red_blue.mp4", changes_only=True)["scenes"]
+    assert [(s["start"], s["end"], s["cut"]) for s in only] == [(0.0, 6.0, "start"), (6.0, 12.0, "picture change")]
+    assert only[1]["frame_id"] in only[1]["frame_ids"]

@@ -25,7 +25,7 @@ How to search well:
 - Use path_contains to stay inside one folder or project.
 - Weak matches are filtered out, so an empty result means "probably not in the footage".
 - Check important hits with view_frames before you cut. Use get_transcript to find exact
-  sentence boundaries for speech cuts.
+  sentence boundaries for speech cuts, and get_scenes to cut on picture changes.
 """
 
 
@@ -85,6 +85,16 @@ def build_server(engine: SearchEngine) -> MCPServer:
         words: also return word-level timestamps.
         """
         return _dump(engine.transcript(file, start, end, words))
+
+    @server.tool()
+    def get_scenes(file: str, changes_only: bool = False) -> str:
+        """List the scenes of one file: start/end seconds, why each scene starts, and a frame_id.
+
+        cut is "start", "picture change" or "length limit" (no visible change; the scene got long).
+        changes_only=true returns only boundaries where the picture really changes. Use this for
+        edits that cut on every scene change.
+        """
+        return _dump(engine.scenes(file, changes_only))
 
     @server.tool()
     def similar_shots(frame_id: int, limit: int = 10, path_contains: str | None = None) -> str:
