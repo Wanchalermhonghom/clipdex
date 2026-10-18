@@ -1,0 +1,16 @@
+clipdex
+Copyright 2026 Wanchalerm Honghom and the clipdex contributors
+
+This product includes software developed by the Alibaba Qwen team:
+src/clipdex/embed_qwen.py follows the reference implementation of
+Qwen3-VL-Embedding (https://github.com/QwenLM/Qwen3-VL-Embedding),
+Copyright 2026 Tongyi Lab, Alibaba Group, licensed under the Apache License 2.0.
+
+clipdex downloads and runs these models at run time. They are not part of
+this repository and keep their own licenses:
+- SigLIP 2 (Google), Apache License 2.0
+- Qwen3-VL-Embedding (Alibaba Qwen team), Apache License 2.0
+- Whisper (OpenAI) and the mlx-community / faster-whisper conversions, MIT License
+- Silero VAD (Silero Team), MIT License
+
+clipdex calls the ffmpeg and ffprobe programs that you install yourself.

@@ -1,0 +1,508 @@
+"""Build and update the index for a library root."""
+
+from __future__ import annotations
+
+import concurrent.futures as cf
+import errno
+import os
+import shutil
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Iterable
+
+import numpy as np
+
+from . import media, scenes, speech
+from .config import Config
+from .library import ScannedFile, default_index_dir, fingerprint, norm, scan_with_errors
+from .store import STAGES, FileRow, Store
+from .timefmt import short
+
+DEPENDS = {
+    "frames": set(),
+    "visual": {"frames"},
+    "scenes": {"frames", "visual"},
+    "speech": set(),
+    "speech_emb": {"speech"},
+}
+
+
+class IndexError_(RuntimeError):
+    """Configuration problem that stops the run (named to avoid shadowing IndexError)."""
+
+
+def log_stderr(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+class Models:
+    """Creates the AI models on first use. Tests replace this with fakes."""
+
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self._siglip = None
+        self._qwen = None
+        self._asr = None
+        self._asr_loaded = False
+
+    def siglip(self):
+        if self._siglip is None:
+            from .embed_siglip import SiglipEncoder
+
+            self._siglip = SiglipEncoder(self.cfg.siglip_model, self.cfg.device)
+        return self._siglip
+
+    def qwen(self):
+        if not self.cfg.qwen_enabled:
+            return None
+        if self._qwen is None:
+            from .embed_qwen import QwenEmbedder
+
+            self._qwen = QwenEmbedder(self.cfg.qwen_model, self.cfg.device, self.cfg.qwen_dtype,
+                                      max_frames=self.cfg.scene_max_frames)
+        return self._qwen
+
+    def asr_enabled(self) -> bool:
+        return self.cfg.asr_backend != "none"
+
+    def asr(self):
+        if not self._asr_loaded:
+            self._asr = speech.make_backend(self.cfg.asr_backend, self.cfg.asr_model, self.cfg.device)
+            self._asr_loaded = True
+        return self._asr
+
+    def transcribe(self, audio: np.ndarray, duration: float, relpath: str = "") -> speech.Transcript:
+        backend = self.asr()
+        if backend is None:
+            return speech.Transcript(language=None, speech_seconds=0.0, segments=[])
+        return speech.transcribe(audio, backend, duration, self.cfg.language,
+                                 self.cfg.vad_threshold, self.cfg.min_speech_seconds)
+
+
+@dataclass
+class SyncReport:
+    added: int = 0
+    changed: int = 0
+    moved: int = 0
+    missing: int = 0
+    pruned: int = 0
+    total: int = 0
+    prune_refused: bool = False
+    unreadable: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RunReport:
+    sync: SyncReport = field(default_factory=SyncReport)
+    processed: int = 0
+    failed: int = 0
+    skipped_failed: int = 0
+    seconds: float = 0.0
+    media_seconds: float = 0.0
+
+
+@dataclass
+class Prepared:
+    row: FileRow
+    info: media.MediaInfo | None = None
+    frames: list[media.Frame] | None = None
+    tmp_dir: Path | None = None
+    audio: np.ndarray | None = None
+    audio_error: str | None = None
+    error: Exception | None = None
+    seconds: float = 0.0
+    warnings: list[str] = field(default_factory=list)
+
+
+class _Lock:
+    def __init__(self, path: Path):
+        self.path = path
+        self.fh = None
+
+    def __enter__(self):
+        self.fh = open(self.path, "a+")
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                self.fh.seek(0)
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+                self.fh.close()
+                self.fh = None
+                raise IndexError_("Another 'clipdex index' run uses this index right now.") from exc
+            # File systems without lock support: continue without a lock.
+        return self
+
+    def __exit__(self, *exc):
+        if self.fh:
+            self.fh.close()
+
+
+class Indexer:
+    def __init__(self, root: Path, cfg: Config, index_dir: Path | None = None,
+                 models: Models | None = None, log: Callable[[str], None] = log_stderr):
+        self.root = root.resolve()
+        if not self.root.is_dir():
+            raise IndexError_(f"Library folder not found: {self.root}")
+        self.index_dir = (index_dir or default_index_dir(self.root)).resolve()
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+        self.frames_dir = self.index_dir / "frames"
+        self.frames_dir.mkdir(exist_ok=True)
+        self.cfg = cfg
+        self.models = models or Models(cfg)
+        self.log = log
+        self.store = Store(self.index_dir / "index.db")
+        if self.store.get_meta("root") != str(self.root):
+            self.store.set_meta("root", str(self.root))
+            self.store.commit()
+
+    # --- sync -------------------------------------------------------------------------------
+    def _frame_dir(self, file_id: int) -> Path:
+        return self.frames_dir / str(file_id)
+
+    def _drop_frame_dir(self, file_id: int) -> None:
+        shutil.rmtree(self._frame_dir(file_id), ignore_errors=True)
+
+    def sync(self, prune: bool = False, force: bool = False) -> SyncReport:
+        report = SyncReport()
+        result = scan_with_errors(self.root, self.cfg, self.index_dir)
+        scanned = result.files
+        report.total = len(scanned)
+        report.unreadable = list(result.unreadable)
+        rows = {r.relpath: r for r in self.store.files()}
+
+        def protected(relpath: str) -> bool:
+            # Files in folders we could not read are not "gone". Never mark or prune them.
+            return any(relpath == u or (u.endswith("/") and relpath.startswith(u)) for u in result.unreadable)
+
+        def fp_of(relpath: str) -> str | None:
+            try:
+                return fingerprint(self.root / relpath)
+            except OSError:
+                return None
+
+        seen: set[str] = set()
+        new: list[ScannedFile] = []
+        for s in scanned:
+            seen.add(s.relpath)
+            row = rows.get(s.relpath)
+            if row is None:
+                new.append(s)
+                continue
+            if row.size == s.size and abs(row.mtime - s.mtime) <= 2.0:
+                if row.missing:
+                    self.store.update_file(row.id, missing=0)
+                continue
+            fp = fp_of(s.relpath)
+            if row.size == s.size and fp is not None and fp == row.fingerprint:
+                # Only the time stamp moved (time zone change on exFAT, copy without times).
+                self.store.update_file(row.id, mtime=s.mtime, missing=0)
+                continue
+            self.store.reset_stages(row.id, STAGES)
+            self.store.update_file(row.id, size=s.size, mtime=s.mtime, fingerprint=fp, duration=None,
+                                   error=None, missing=0, language=None, speech_seconds=None)
+            self._drop_frame_dir(row.id)
+            report.changed += 1
+
+        gone = [r for path, r in rows.items() if path not in seen and not protected(path)]
+        by_fp = {(r.size, r.fingerprint): r for r in gone if r.fingerprint}
+        for s in new:
+            fp = fp_of(s.relpath)
+            match = by_fp.pop((s.size, fp), None) if fp else None
+            if match is not None:
+                self.store.update_file(match.id, relpath=s.relpath, mtime=s.mtime, missing=0)
+                gone.remove(match)
+                report.moved += 1
+            else:
+                self.store.add_file(s.relpath, s.size, s.mtime, fp)
+                report.added += 1
+
+        if prune and gone and not force and (not scanned or (len(gone) > 10 and len(gone) > len(rows) / 2)):
+            # Probably the wrong folder, an empty mount point or a drive error: do not delete.
+            report.prune_refused = True
+            prune = False
+        for r in gone:
+            if prune:
+                self.store.delete_file(r.id)
+                self._drop_frame_dir(r.id)
+                report.pruned += 1
+            else:
+                if not r.missing:
+                    self.store.update_file(r.id, missing=1)
+                report.missing += 1
+        self.store.bump_revision()
+        self.store.commit()
+        return report
+
+    # --- models bookkeeping ---------------------------------------------------------------------
+    def _check_models(self, wanted: set[str], reembed: Iterable[str]) -> None:
+        reembed = set(reembed)
+        checks = []
+        if "visual" in wanted:
+            checks.append(("model.siglip", self.cfg.siglip_model, "visual", ("visual",)))
+        if wanted & {"scenes", "speech_emb"} and self.cfg.qwen_enabled:
+            checks.append(("model.qwen", self.cfg.qwen_model, "qwen", ("scenes", "speech_emb")))
+        for key, model, flag, stages in checks:
+            stored = self.store.get_meta(key)
+            if stored is None or stored == model:
+                self.store.set_meta(key, model)
+                continue
+            if flag not in reembed:
+                raise IndexError_(
+                    f"The index was built with {stored}, but the config now says {model}. "
+                    f"Run again with --reembed {flag} to rebuild these embeddings.")
+            for row in self.store.files():
+                self.store.reset_stages(row.id, stages)
+            self.store.set_meta(key, model)
+            self.log(f"Rebuilding {', '.join(stages)} embeddings with {model}.")
+        self.store.commit()
+
+    def _wanted_stages(self, stages: Iterable[str] | None) -> set[str]:
+        if stages:
+            unknown = set(stages) - set(STAGES)
+            if unknown:
+                raise IndexError_(f"Unknown stage(s): {', '.join(sorted(unknown))}. Use: {', '.join(STAGES)}")
+            wanted = set(stages)
+        else:
+            wanted = {"frames", "visual"}
+            if self.models.asr_enabled():
+                wanted.add("speech")
+            if self.cfg.qwen_enabled:
+                wanted.add("scenes")
+                if self.models.asr_enabled():
+                    wanted.add("speech_emb")
+        if not self.cfg.qwen_enabled:
+            wanted -= {"scenes", "speech_emb"}
+        if not self.models.asr_enabled():
+            wanted -= {"speech", "speech_emb"}
+        closure = set(wanted)
+        for s in wanted:
+            closure |= DEPENDS[s]
+        return closure
+
+    # --- run ------------------------------------------------------------------------------------
+    def run(self, only: str | None = None, stages: Iterable[str] | None = None, limit: int | None = None,
+            retry_failed: bool = False, prune: bool = False, reembed: Iterable[str] = (),
+            force: bool = False) -> RunReport:
+        with _Lock(self.index_dir / ".lock"):
+            media.STOP.clear()
+            try:
+                return self._run(only, stages, limit, retry_failed, prune, reembed, force)
+            finally:
+                media.STOP.clear()
+
+    def _run(self, only, stages, limit, retry_failed, prune, reembed, force) -> RunReport:
+        media.ensure_tools()
+        started = time.time()
+        for tmp in self.frames_dir.glob("*.tmp"):
+            shutil.rmtree(tmp, ignore_errors=True)
+        report = RunReport()
+        report.sync = self.sync(prune=prune, force=force)
+        s = report.sync
+        self.log(f"Library {self.root}: {s.total} video files "
+                 f"({s.added} new, {s.changed} changed, {s.moved} moved, {s.missing} missing"
+                 + (f", {s.pruned} removed" if prune else "") + ").")
+        if s.unreadable:
+            self.log(f"Warning: {len(s.unreadable)} path(s) could not be read and were left unchanged: "
+                     + ", ".join(s.unreadable[:5]) + (" ..." if len(s.unreadable) > 5 else ""))
+        if s.prune_refused:
+            self.log("Warning: --prune would remove more than half of the index (or the folder looks empty). "
+                     "Nothing was removed. Check the drive, then use --prune --force if this is correct.")
+        wanted = self._wanted_stages(stages)
+        self._check_models(wanted, reembed)
+
+        todo: list[FileRow] = []
+        needle = norm(only) if only else None
+        for row in self.store.files(include_missing=False):
+            if needle and needle not in norm(row.relpath):
+                continue
+            if not any(not row.done(st) for st in wanted):
+                continue
+            if row.error and not retry_failed:
+                report.skipped_failed += 1
+                continue
+            todo.append(row)
+        if limit:
+            todo = todo[:limit]
+        if not todo:
+            self.log("Nothing to do. The index is up to date.")
+            report.seconds = time.time() - started
+            return report
+        self.log(f"Indexing {len(todo)} file(s). Stages: {', '.join(st for st in STAGES if st in wanted)}.")
+
+        pool = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
+        future = pool.submit(self._prepare, todo[0], wanted)
+        try:
+            for i, row in enumerate(todo):
+                prepared = future.result()
+                if i + 1 < len(todo):
+                    future = pool.submit(self._prepare, todo[i + 1], wanted)
+                t0 = time.time()
+                try:
+                    summary = self._process(prepared, wanted)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - one bad file must not stop the run
+                    self.store.rollback()
+                    message = f"{type(exc).__name__}: {exc}"[:800]
+                    self.store.update_file(row.id, error=message)
+                    self.store.bump_revision()
+                    self.store.commit()
+                    report.failed += 1
+                    self.log(f"[{i + 1}/{len(todo)}] {row.relpath}  FAILED  {message}")
+                    continue
+                finally:
+                    if prepared.tmp_dir is not None:
+                        shutil.rmtree(prepared.tmp_dir, ignore_errors=True)
+                for warning in prepared.warnings:
+                    self.log(f"    warning: {warning}")
+                elapsed = time.time() - t0 + prepared.seconds
+                fresh = self.store.file_by_id(row.id)
+                duration = (fresh.duration if fresh else None) or 0.0
+                report.processed += 1
+                report.media_seconds += duration
+                speed = f"  {duration / elapsed:.1f}x realtime" if elapsed > 0 and duration else ""
+                self.log(f"[{i + 1}/{len(todo)}] {row.relpath} ({short(duration)})  {summary}  "
+                         f"{elapsed:.1f}s{speed}")
+        except KeyboardInterrupt:
+            media.STOP.set()  # the prefetch thread starts no new ffmpeg process
+            self.store.rollback()
+            future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+            self.log("Stopped. Finished files are saved. Run the same command again to continue.")
+            raise
+        pool.shutdown(wait=True)
+        report.seconds = time.time() - started
+        from .hardware import memory_report
+
+        self.log(f"Done: {report.processed} file(s), {report.failed} failed, "
+                 f"{short(report.media_seconds)} of footage in {short(report.seconds)}. "
+                 f"Memory: {memory_report()}.")
+        return report
+
+    def _prepare(self, row: FileRow, wanted: set[str]) -> Prepared:
+        """Runs in a worker thread: probe, sample frames, decode audio. No database writes."""
+        t0 = time.time()
+        prepared = Prepared(row=row)
+        src = self.root / row.relpath
+        try:
+            if media.STOP.is_set():
+                raise KeyboardInterrupt
+            info = media.probe(src)
+            prepared.info = info
+            if "frames" in wanted and not row.frames_done and info.has_video:
+                tmp = self.frames_dir / f"{row.id}.tmp"
+                shutil.rmtree(tmp, ignore_errors=True)
+                prepared.tmp_dir = tmp
+                prepared.frames = media.extract_frames(
+                    src, tmp, info.duration, self.cfg.frame_interval, self.cfg.frame_max_side,
+                    self.cfg.frame_jpeg_quality, self.cfg.keyframes_first)
+        except Exception as exc:  # noqa: BLE001
+            prepared.error = exc
+        if prepared.error is None and prepared.info is not None and "speech" in wanted \
+                and not row.speech_done and prepared.info.has_audio and not media.STOP.is_set():
+            try:
+                prepared.audio = media.extract_audio(src, prepared.info.duration)
+            except Exception as exc:  # noqa: BLE001 - a broken audio track must not cost the frames
+                prepared.audio_error = f"audio track could not be decoded ({exc})"
+        prepared.seconds = time.time() - t0
+        return prepared
+
+    def _commit(self) -> None:
+        self.store.bump_revision()
+        self.store.commit()
+
+    def _process(self, p: Prepared, wanted: set[str]) -> str:
+        if p.error is not None:
+            raise p.error
+        row, info = p.row, p.info
+        assert info is not None
+        notes: list[str] = []
+        self.store.update_file(row.id, duration=info.duration, width=info.width, height=info.height,
+                               fps=info.fps, vcodec=info.vcodec, has_audio=int(info.has_audio), error=None)
+        self._commit()
+
+        # frames
+        if "frames" in wanted and not row.frames_done:
+            final = self._frame_dir(row.id)
+            shutil.rmtree(final, ignore_errors=True)
+            items = []
+            if p.frames:
+                assert p.tmp_dir is not None
+                os.replace(p.tmp_dir, final)
+                p.tmp_dir = None
+                for fr in p.frames:
+                    rel = f"frames/{row.id}/{fr.path.name}"
+                    items.append((fr.index, fr.t, rel))
+            self.store.add_frames(row.id, items)
+            self.store.update_file(row.id, frames_done=1)
+            self._commit()
+            notes.append(f"{len(items)} frames")
+
+        # visual (SigLIP per frame)
+        if "visual" in wanted and not row.visual_done:
+            frame_rows = [r for r in self.store.frames_for_file(row.id) if r["emb"] is None]
+            if frame_rows:
+                enc = self.models.siglip()
+                vecs = enc.encode_images([self.index_dir / r["image"] for r in frame_rows],
+                                         batch=self.cfg.siglip_batch)
+                self.store.set_frame_embeddings([(r["id"], v) for r, v in zip(frame_rows, vecs)])
+            self.store.update_file(row.id, visual_done=1)
+            self._commit()
+            notes.append("visual")
+
+        # speech (VAD + Whisper)
+        if "speech" in wanted and not row.speech_done:
+            if p.audio is not None and p.audio.size:
+                tr = self.models.transcribe(p.audio, info.duration, row.relpath)
+            else:
+                tr = speech.Transcript(language=None, speech_seconds=0.0, segments=[])
+                if p.audio_error:
+                    p.warnings.append(p.audio_error + "; the file has no transcript")
+            rows = [s.to_row() if isinstance(s, speech.Segment) else s for s in tr.segments]
+            self.store.add_segments(row.id, rows)
+            self.store.add_chunks(row.id, speech.make_chunks(rows, self.cfg.speech_chunk_seconds))
+            self.store.update_file(row.id, speech_done=1, language=tr.language,
+                                   speech_seconds=round(tr.speech_seconds, 2))
+            self._commit()
+            notes.append(f"speech {tr.language or '-'} {short(tr.speech_seconds)}" if rows else "no speech")
+
+        # transcript chunk embeddings (Qwen text)
+        if "speech_emb" in wanted and not row.speech_emb_done:
+            chunks = [c for c in self.store.chunks_for_file(row.id) if c["emb"] is None]
+            if chunks:
+                qwen = self.models.qwen()
+                vecs = qwen.embed_texts([c["text"] for c in chunks])
+                self.store.set_chunk_embeddings([(c["id"], v) for c, v in zip(chunks, vecs)])
+            self.store.update_file(row.id, speech_emb_done=1)
+            self._commit()
+
+        # scenes (Qwen video embeddings over short frame sequences)
+        if "scenes" in wanted and not row.scenes_done:
+            frame_rows = [r for r in self.store.frames_for_file(row.id) if r["emb"] is not None]
+            self.store.reset_stages(row.id, ["scenes"])
+            count = 0
+            if frame_rows:
+                embs = np.stack([np.frombuffer(r["emb"], dtype=np.float16).astype(np.float32)
+                                 for r in frame_rows])
+                times = [float(r["t"]) for r in frame_rows]
+                found = scenes.segment(times, embs, info.duration, self.cfg.scene_max_seconds,
+                                       self.cfg.scene_cut_similarity)
+                qwen = self.models.qwen()
+                sequences = [[str(self.index_dir / frame_rows[k]["image"]) for k in sc.frames] for sc in found]
+                vecs = qwen.embed_frame_sequences(sequences, batch=self.cfg.qwen_batch)
+                for sc, vec in zip(found, vecs):
+                    self.store.add_scene(row.id, sc.start, sc.end, [frame_rows[k]["id"] for k in sc.frames], vec)
+                count = len(found)
+            self.store.update_file(row.id, scenes_done=1)
+            self._commit()
+            notes.append(f"{count} scenes")
+        return " · ".join(notes) if notes else "up to date"

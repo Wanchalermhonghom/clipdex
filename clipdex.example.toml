@@ -1,0 +1,53 @@
+# clipdex settings. Put the lines you want to change into <library>/.clipdex/config.toml.
+# Every key is optional. These are the defaults. 'clipdex setup' writes a profile for your machine.
+
+# --- scanning ---
+# video_extensions = [".mp4", ".mov", ".m4v", ".mkv", ".avi", ".mts", ".m2ts", ".mxf", ".webm", ".3gp", ".insv"]
+# exclude_dirs = ["CacheClip", "ProxyMedia", "Proxy", "Optimized Media", "Render Cache"]
+# exclude_globs = ["*M4ROOT/SUB/*"]
+
+# --- frames ---
+# frame_interval = 2.0  # seconds between sampled frames
+# frame_max_side = 512  # longest side of stored frames in pixels
+# frame_jpeg_quality = 4  # ffmpeg -q:v (2 = best, 31 = worst)
+# keyframes_first = true  # decode only keyframes first; falls back to full decode on big gaps
+
+# --- speech ---
+# asr_backend = "auto"  # auto | mlx | faster-whisper | none
+# asr_model = ""  # empty = backend default (whisper large-v3-turbo)
+# language = "auto"  # auto (detected per file) or a Whisper code like "de" / "en"
+# vad_threshold = 0.5
+# min_speech_seconds = 1.0  # less detected speech than this = no transcription
+# speech_chunk_seconds = 20.0  # length of transcript chunks for semantic speech search
+
+# --- models ---
+# device = "auto"  # auto | mps | cuda | cpu
+# siglip_model = "google/siglip2-so400m-patch14-384"
+# siglip_batch = 32
+# qwen_enabled = true
+# qwen_model = "Qwen/Qwen3-VL-Embedding-2B"
+# qwen_dtype = "auto"  # auto | bfloat16 | float16 | float32
+# qwen_batch = 4
+
+# --- scenes ---
+# scene_max_seconds = 10.0
+# scene_cut_similarity = 0.8  # SigLIP cosine below this vs. scene start = new scene
+# scene_max_frames = 8
+
+# --- search ---
+# visual_min_prob = 0.002
+# visual_rel_logit = 4.0  # logit must be within this of the best frame's logit
+# baseline_percentile = 20.0
+# scene_floor = 0.4
+# scene_margin = 0.15
+# speech_sem_floor = 0.42
+# speech_sem_margin = 0.15
+# channel_top_k = 200
+# rrf_k = 60.0
+# merge_gap = 2.0  # hits closer than this (seconds) merge into one moment
+# span_tolerance_logit = 2.0  # visual (SigLIP logit)
+# span_tolerance_cos = 0.08  # scenes and speech_sem (cosine)
+# moment_max_seconds = 30.0  # must be >= scene_max_seconds and speech_chunk_seconds
+# max_per_file = 3
+# qwen_visual_instruction = "Retrieve video clips that show what the user describes."
+# qwen_speech_instruction = "Retrieve transcript passages in which the speaker talks about what the user describes."
