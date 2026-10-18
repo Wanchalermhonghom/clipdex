@@ -677,3 +677,23 @@ def test_frame_usage_note(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="frame_store"):
         Config().apply({"frame_store": "zip"})
+
+
+def test_index_folder_must_not_be_the_library(library, cfg):
+    with pytest.raises(IndexError_, match="must not be the library folder"):
+        Indexer(library, cfg, index_dir=library, models=FakeModels(cfg), log=lambda m: None)
+    with pytest.raises(IndexError_):
+        Indexer(library / "A", cfg, index_dir=library, models=FakeModels(cfg), log=lambda m: None)
+
+
+def test_frame_cleanup_deletes_only_frame_files(library, cfg):
+    files_cfg = cfg.apply({"frame_store": "files"})
+    idx = Indexer(library, files_cfg, models=FakeModels(files_cfg, TRANSCRIPTS), log=lambda m: None)
+    idx.run()
+    green = idx.store.file_by_path("B/green.mov").id
+    folder = idx.index_dir / "frames" / str(green)
+    (folder / "notes.txt").write_text("not a frame")  # a file that clipdex did not write
+    (idx.index_dir / "frames" / "2024").mkdir()  # a folder that clipdex did not write
+    Indexer(library, cfg, models=FakeModels(cfg, TRANSCRIPTS), log=lambda m: None).run()  # packs the frames
+    assert (folder / "notes.txt").exists() and not list(folder.glob("*.jpg"))
+    assert (idx.index_dir / "frames" / "2024").is_dir()

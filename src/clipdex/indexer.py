@@ -5,7 +5,7 @@ from __future__ import annotations
 import concurrent.futures as cf
 import errno
 import os
-import shutil
+import re
 import sys
 import time
 from collections.abc import Callable, Iterable
@@ -46,6 +46,22 @@ def log_stderr(msg: str) -> None:
 
 def _pause(seconds: float) -> None:
     time.sleep(seconds)
+
+
+_FRAME_FILE = re.compile(r"^\d{6}\.jpg$")  # the names ffmpeg writes for sampled frames
+
+
+def _remove_frame_folder(folder: Path) -> None:
+    """Delete the frame JPEGs that clipdex wrote, then the folder if it is empty. Nothing else."""
+    if not folder.is_dir():
+        return
+    for f in folder.iterdir():
+        if f.is_file() and _FRAME_FILE.match(f.name):
+            f.unlink(missing_ok=True)
+    try:
+        folder.rmdir()
+    except OSError:  # other files in it: not ours, keep them
+        pass
 
 
 def _count(n: int, word: str) -> str:
@@ -245,6 +261,9 @@ class Indexer:
         if not self.root.is_dir():
             raise IndexError_(f"Library folder not found: {self.root}")
         self.index_dir = (index_dir or default_index_dir(self.root)).resolve()
+        if self.index_dir == self.root or self.root.is_relative_to(self.index_dir):
+            raise IndexError_(f"The index folder ({self.index_dir}) must not be the library folder or contain it. "
+                              f"Use {default_index_dir(self.root)} (the default) or a folder outside the library.")
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self.frames_dir = self.index_dir / "frames"
         self.frames_dir.mkdir(exist_ok=True)
@@ -265,7 +284,7 @@ class Indexer:
         return self.frames_dir / str(file_id)
 
     def _drop_frame_dir(self, file_id: int) -> None:
-        shutil.rmtree(self._frame_dir(file_id), ignore_errors=True)
+        _remove_frame_folder(self._frame_dir(file_id))
         (self.frames_dir / f"{file_id}.pack").unlink(missing_ok=True)
 
     def _pack_loose_frames(self) -> None:
@@ -287,14 +306,14 @@ class Indexer:
                                         [(framestore.pack_ref(rel, o, size), r["id"])
                                          for r, (o, size) in zip(rows, spans, strict=True)])
             self.store.commit()
-            shutil.rmtree(self._frame_dir(file_id), ignore_errors=True)
+            _remove_frame_folder(self._frame_dir(file_id))
             if n % 200 == 0:
                 self.log(f"    packed {n}/{len(ids)}")
-        # folders left over from a stopped run: their frames are packed already
-        for d in self.frames_dir.iterdir():
-            if d.is_dir() and d.name.isdigit() and not self.store.query(
-                    "SELECT 1 FROM frames WHERE file_id=? AND image NOT LIKE '%.pack#%' LIMIT 1", (int(d.name),)):
-                shutil.rmtree(d, ignore_errors=True)
+        # folders left over from a stopped run, for files whose frames are packed already
+        for (file_id,) in self.store.query(
+                "SELECT DISTINCT file_id FROM frames WHERE image LIKE '%.pack#%' AND file_id NOT IN "
+                "(SELECT file_id FROM frames WHERE image NOT LIKE '%.pack#%')"):
+            _remove_frame_folder(self._frame_dir(file_id))
 
     def sync(self, prune: bool = False, force: bool = False) -> SyncReport:
         report = SyncReport()
@@ -427,10 +446,10 @@ class Indexer:
     def _run(self, only, stages, limit, retry_failed, prune, reembed, force, redo) -> RunReport:
         media.ensure_tools()
         started = time.time()
-        for tmp in self.frames_dir.glob("*.tmp"):  # from a stopped run: frame folders and pack files
-            if tmp.is_dir():
-                shutil.rmtree(tmp, ignore_errors=True)
-            else:
+        for tmp in self.frames_dir.glob("*.tmp"):  # from a stopped run: "<id>.tmp" folders, "<id>.pack.tmp"
+            if tmp.is_dir() and re.fullmatch(r"\d+\.tmp", tmp.name):
+                _remove_frame_folder(tmp)
+            elif tmp.is_file() and re.fullmatch(r"\d+\.pack\.tmp", tmp.name):
                 tmp.unlink(missing_ok=True)
         report = RunReport()
         report.sync = self.sync(prune=prune, force=force)
@@ -572,7 +591,7 @@ class Indexer:
                     continue
                 finally:
                     if prepared.tmp_dir is not None:
-                        shutil.rmtree(prepared.tmp_dir, ignore_errors=True)
+                        _remove_frame_folder(prepared.tmp_dir)
                 for warning in prepared.warnings:
                     self.log(f"    warning: {warning}")
                 elapsed = time.time() - t0 + prepared.seconds
@@ -609,7 +628,7 @@ class Indexer:
             prepared.info = info
             if "frames" in wanted and not row.frames_done and info.has_video:
                 tmp = self.frames_dir / f"{row.id}.tmp"
-                shutil.rmtree(tmp, ignore_errors=True)
+                _remove_frame_folder(tmp)
                 prepared.tmp_dir = tmp
                 prepared.frames = media.extract_frames(
                     src, tmp, info.duration, self.cfg.frame_interval, self.cfg.frame_max_side,
